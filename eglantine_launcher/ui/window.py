@@ -112,7 +112,7 @@ class LauncherWindow(Adw.ApplicationWindow):
             GLib.timeout_add_seconds(3600, self._hourly_tick)
             GLib.timeout_add_seconds(60, self._initial_update_check)
 
-        self.status_label = Gtk.Label(label="Ready.")
+        self.status_label = Gtk.Label(label="")
         self.status_label.set_wrap(True)
         self.status_label.set_xalign(0)
         self.status_label.set_selectable(True)
