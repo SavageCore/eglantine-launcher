@@ -13,6 +13,9 @@ pages=(main settings about)
 flags_main=""
 flags_settings="--settings"
 flags_about="--about"
+titles_main="Eglantine Launcher"
+titles_settings="Settings"
+titles_about="Eglantine Launcher"
 
 export GDK_BACKEND=x11
 export PYTHONPATH="$ROOT:${PYTHONPATH:-}"
@@ -44,6 +47,16 @@ if ! kill -0 $XVFB_PID 2>/dev/null; then
   cat "$XVFB_LOG" >&2
   exit 1
 fi
+# solid magenta backdrop behind everything: rounded CSD corners would
+# otherwise show the root window; flood-filled to transparent after capture
+python3 "$ROOT/scripts/shot_backdrop.py" "$DISP" &
+BACKDROP_PID=$!
+trap 'kill $BACKDROP_PID $XVFB_PID 2>/dev/null; rm -rf "$SHOT_HOME" "$XVFB_LOG"' EXIT
+sleep 0.5
+if ! kill -0 $BACKDROP_PID 2>/dev/null; then
+  echo "backdrop failed to start" >&2
+  exit 1
+fi
 
 shot() {
   local mode="$1" page="$2" extra="$3" title="$4" dest="$5"
@@ -55,7 +68,8 @@ shot() {
   # wait for the window, then capture it (border included for context)
   local win=""
   for _ in $(seq 1 50); do
-    win=$(DISPLAY=$DISP xdotool search --name "Eglantine Launcher" 2>/dev/null | head -1 || true)
+    # last match = topmost window (dialogs open above the main window)
+    win=$(DISPLAY=$DISP xdotool search --name "$title" 2>/dev/null | tail -1 || true)
     [ -n "$win" ] && break
     sleep 0.2
     kill -0 $app_pid 2>/dev/null || break
@@ -68,7 +82,8 @@ shot() {
   DISPLAY=$DISP xdotool windowactivate "$win" 2>/dev/null || true
   sleep 1.5
   mkdir -p "$(dirname "$dest")"
-  if DISPLAY=$DISP timeout 20 import -window "$win" "$dest"; then
+  if DISPLAY=$DISP timeout 20 import -window "$win" "$dest" \
+    && python3 "$ROOT/scripts/shot_alpha.py" "$dest" >/dev/null; then
     echo "saved $dest"
   else
     echo "capture failed for $mode/$page" >&2
@@ -80,6 +95,7 @@ shot() {
 for mode in light dark; do
   for page in "${pages[@]}"; do
     var="flags_${page}"
-    shot "$mode" "$page" "${!var}" "Eglantine Launcher" "$OUT/$mode/$page.png" || true
+    titlevar="titles_${page}"
+    shot "$mode" "$page" "${!var}" "${!titlevar}" "$OUT/$mode/$page.png" || true
   done
 done
