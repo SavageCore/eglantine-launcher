@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Eglantine Launcher repos</title></head>
+<body>
+<h1>Eglantine Launcher package repos</h1>
+<h2>Fedora / Nobara (dnf)</h2>
+<pre>sudo tee /etc/yum.repos.d/eglantine-launcher.repo &gt;/dev/null &lt;&lt;EOF
+[eglantine-launcher]
+name=Eglantine Launcher
+baseurl=https://savagecore.github.io/eglantine-launcher/dnf/
+enabled=1
+gpgcheck=0
+EOF
+sudo dnf install eglantine-launcher</pre>
+<h2>Debian / Ubuntu (apt)</h2>
+<pre>echo "deb [trusted=yes] https://savagecore.github.io/eglantine-launcher/apt/ /" | sudo tee /etc/apt/sources.list.d/eglantine-launcher.list
+sudo apt update &amp;&amp; sudo apt install eglantine-launcher</pre>
+<h2>Flatpak</h2>
+<pre>flatpak remote-add --if-not-exists eglantine-launcher https://savagecore.github.io/eglantine-launcher/flatpak/eglantine-launcher.flatpakref
+flatpak install eglantine-launcher dev.savagecore.EglantineLauncher</pre>
+</body>
+</html>
