@@ -388,3 +388,78 @@ def test_shortcut_name_fallback():
 
     assert shortcut_name({"id": "abc"}) == "abc (EL)"
     assert shortcut_name({}) == "Eglantine (EL)"
+
+
+def _rel_cfg(monkeypatch, patch_urlopen):
+    patch_urlopen(
+        [
+            {
+                "tag_name": "build-99",
+                "name": "AMD experimental",
+                "body": "",
+                "prerelease": True,
+                "assets": [
+                    {
+                        "name": "eglantine-a42b4d4c744e12ce5262648eee50daecd1ca456-linux-x86_64.AppImage",
+                        "browser_download_url": "https://x/a",
+                    }
+                ],
+            },
+            {
+                "tag_name": "build-98",
+                "name": "regular",
+                "body": "",
+                "prerelease": True,
+                "assets": [
+                    {
+                        "name": "eglantine-def456-linux-x86_64.AppImage",
+                        "browser_download_url": "https://x/b",
+                    }
+                ],
+            },
+        ]
+    )
+    return {"project": "t", "pgo": False, "projects": [{"id": "t", "releases_url": "https://x/y"}]}
+
+
+def test_find_release_for_commit_full_sha(patch_urlopen, monkeypatch):
+    from eglantine_launcher.tasks import find_release_for_commit
+
+    cfg = _rel_cfg(monkeypatch, patch_urlopen)
+    assert find_release_for_commit(cfg, "a42b4d4c744e12ce5262648eee50daecd1ca456") == "build-99"
+
+
+def test_find_release_for_commit_short_sha_in_tag(patch_urlopen, monkeypatch):
+    import urllib.request
+
+    from eglantine_launcher import tasks
+
+    class Resp:
+        def read(self_inner):
+            import json
+
+            return json.dumps(
+                [
+                    {
+                        "tag_name": "v1.0-abc1234",
+                        "name": "",
+                        "body": "",
+                        "prerelease": False,
+                        "assets": [
+                            {"name": "app-linux-x86_64.AppImage", "browser_download_url": "https://x"}
+                        ],
+                    }
+                ]
+            ).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: Resp())
+    cfg = {"project": "t", "pgo": False, "projects": [{"id": "t", "releases_url": "https://x/y"}]}
+    assert tasks.find_release_for_commit(cfg, "abc1234def5678") == "v1.0-abc1234"
+    assert tasks.find_release_for_commit(cfg, "0000000000000") is None
+    assert tasks.find_release_for_commit(cfg, "") is None

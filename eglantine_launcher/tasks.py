@@ -286,6 +286,30 @@ def download(url, dest, progress_cb=None):
     return dest
 
 
+def find_release_for_commit(cfg, sha):
+    """Newest release tag whose matching asset was built from sha (or None).
+
+    Matches on the full sha in asset/tag names, or the 7-char prefix in
+    asset/tag names (releases like Eglantine embed the commit in file names).
+    """
+    if not sha:
+        return None
+    short = sha[:7]
+    try:
+        rels = list_releases(cfg)
+    except Exception:
+        return None
+    for rel in rels:
+        tag = rel.get("tag_name") or ""
+        asset = find_asset(tag, rel.get("assets", []), cfg.get("pgo", True))
+        if not asset:
+            continue
+        name = asset.get("name", "")
+        if sha in name or sha in tag or short in name or short in tag:
+            return tag
+    return None
+
+
 def release_appimage_path(cfg):
     base = Path(cfg["install_dir"]) / cfg.get("project", "eglantine")
     if is_windows():

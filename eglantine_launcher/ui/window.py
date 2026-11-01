@@ -17,6 +17,7 @@ from ..tasks import (
     check_build_deps,
     check_release,
     fetch_remote_sources,
+    find_release_for_commit,
     install_shortcut,
     is_windows,
     launch,
@@ -26,6 +27,7 @@ from ..tasks import (
     remove_shortcut,
     shortcut_name,
     shortcut_path,
+    source_dir,
 )
 from ..tasks import arch as get_arch
 from .deps_dialog import DepsDialog
@@ -487,6 +489,42 @@ class LauncherWindow(Adw.ApplicationWindow):
         self._last_fraction_time = time.monotonic()
         self._set_progress((downloaded / total) if total else 0.0)
 
+    def _already_built(self, commit):
+        src = source_dir(self.cfg)
+        binary = src / "build" / "release" / "bin" / ("eglantine.exe" if is_windows() else "eglantine")
+        return self.cfg.get("last_source_commit") == commit and binary.exists()
+
+    def _ask_download_or_build(self, tag, sha):
+        import threading
+
+        done = threading.Event()
+        choice = {"v": "build"}
+
+        def _show():
+            dialog = Adw.MessageDialog.new(
+                self,
+                "Already released",
+                f"Commit {sha[:7]} is already published in release {tag}.\n\n"
+                "Download it in a minute or two, or build from source anyway?",
+            )
+            dialog.add_response("build", "Build from source")
+            dialog.add_response("download", "Download instead")
+            dialog.set_default_response("download")
+            dialog.set_close_response("build")
+
+            def _on_response(_d, resp):
+                choice["v"] = resp
+                done.set()
+                _d.close()
+
+            dialog.connect("response", _on_response)
+            dialog.present()
+            return False
+
+        GLib.idle_add(_show)
+        done.wait(timeout=300)
+        return choice["v"] == "download"
+
     def _worker(self):
         try:
             mode = getattr(self, "_launch_mode", self.cfg.get("mode", "release"))
@@ -522,6 +560,27 @@ class LauncherWindow(Adw.ApplicationWindow):
                     return
                 idx = self.version_drop.get_selected()
                 commit = self._commit_shas[idx - 1] if idx > 0 and idx - 1 < len(self._commit_shas) else None
+                resolved = commit or (self._commit_shas[0] if self._commit_shas else None)
+                if resolved and self._already_built(resolved):
+                    binary = build_source(
+                        self.cfg,
+                        status_cb=self._set_status,
+                        log_cb=self._append_log,
+                        commit=commit,
+                    )
+                    launch(binary)
+                    return
+                tag = find_release_for_commit(self.cfg, resolved) if resolved else None
+                if tag:
+                    if self.auto or self._ask_download_or_build(tag, resolved):
+                        appimage = check_release(
+                            self.cfg,
+                            progress_cb=self._note_fraction,
+                            status_cb=self._set_status,
+                            tag=tag,
+                        )
+                        launch(appimage)
+                        return
                 binary = build_source(
                     self.cfg,
                     status_cb=self._set_status,
