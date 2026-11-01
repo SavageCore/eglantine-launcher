@@ -9,8 +9,12 @@ OUT="${OUT:-$HOME/eglantine-launcher.AppImage}"
 
 rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/applications"
+mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+mkdir -p "$APPDIR/usr/share/icons/hicolor/scalable/apps"
+mkdir -p "$APPDIR/data/icons"
 cp -r "$ROOT/eglantine_launcher" "$APPDIR/"
 find "$APPDIR" -name "__pycache__" -type d -prune -exec rm -rf {} +
+cp "$ROOT"/data/icons/* "$APPDIR/data/icons/"
 cat > "$APPDIR/usr/bin/eglantine-launcher" <<'EOF'
 #!/bin/sh
 HERE=$(dirname "$(readlink -f "$0")")
@@ -32,6 +36,10 @@ Categories=Game;Emulator;
 EOF
 ln -sf usr/share/applications/eglantine-launcher.desktop "$APPDIR/eglantine-launcher.desktop"
 cp "$ROOT/data/icons/eglantine-launcher.png" "$APPDIR/eglantine-launcher.png"
+cp "$ROOT/data/icons/eglantine-launcher.png" \
+  "$APPDIR/usr/share/icons/hicolor/256x256/apps/eglantine-launcher.png"
+cp "$ROOT/data/icons/eglantine-launcher.svg" \
+  "$APPDIR/usr/share/icons/hicolor/scalable/apps/eglantine-launcher.svg"
 export APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64
 appimagetool-x86_64.AppImage "$APPDIR" "$OUT" 2>/dev/null \
   || "$HOME/.local/bin/appimage-tools/appimagetool-x86_64.AppImage" "$APPDIR" "$OUT"

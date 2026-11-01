@@ -10,7 +10,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio  # noqa: E402
 
-from eglantine_launcher.ui.window import DepsDialog, LauncherWindow  # noqa: E402
+from eglantine_launcher.ui.deps_dialog import DepsDialog  # noqa: E402
+from eglantine_launcher.ui.window import LauncherWindow  # noqa: E402
 
 
 def _make_app():

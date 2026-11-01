@@ -48,9 +48,9 @@ to a pre-filled token creation page (name + no expiration).
 ## Building from source
 
 Linux: cmake, ninja, git, a C++ compiler, pkg-config, and Qt 6 dev files
-(the launcher bundles FFmpeg/SDL3 itself). Windows: cmake, ninja, git,
-cl.exe or clang-cl (Developer Command Prompt), Qt (`QT_ROOT` or `C:\Qt`),
-and the Vulkan SDK (`VULKAN_SDK`).
+(the launcher bundles FFmpeg/SDL3 itself). Windows: see
+[docs/build-windows.md](docs/build-windows.md) for the full setup
+(Visual Studio C++ workload, CMake, Git, Python, Vulkan SDK, Qt).
 
 With PGO enabled (default), Linux source builds additionally use clang and
 the Eden PGO profile when available (prefers `~/opt/llvm23`, else system

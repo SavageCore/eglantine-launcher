@@ -25,62 +25,8 @@ from ..tasks import (
     release_platforms,
 )
 from ..tasks import arch as get_arch
+from .deps_dialog import DepsDialog
 from .settings_window import SettingsWindow
-
-
-class DepsDialog(Adw.Window):
-    def __init__(self, parent, text, on_ignore=None):
-        self.on_ignore = on_ignore
-        super().__init__(transient_for=parent, modal=True, title="Missing build dependencies")
-        self.set_default_size(520, 300)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        box.set_margin_top(12)
-        box.set_margin_bottom(12)
-        box.set_margin_start(12)
-        box.set_margin_end(12)
-
-        label = Gtk.Label(label="These required tools are missing:")
-        label.set_xalign(0)
-        box.append(label)
-
-        self.view = Gtk.TextView()
-        self.view.set_editable(False)
-        self.view.set_monospace(True)
-        self.view.set_wrap_mode(Gtk.WrapMode.WORD)
-        self.view.get_buffer().set_text(text)
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_child(self.view)
-        scrolled.set_vexpand(True)
-        box.append(scrolled)
-
-        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        btn_box.set_halign(Gtk.Align.END)
-        copy_btn = Gtk.Button(label="Copy")
-        copy_btn.connect("clicked", self._on_copy)
-        btn_box.append(copy_btn)
-        if self.on_ignore:
-            ignore_btn = Gtk.Button(label="Limit to downloads")
-            ignore_btn.set_tooltip_text("Hide source builds. Re-enable any time in Settings.")
-            ignore_btn.connect("clicked", self._on_ignore)
-            btn_box.append(ignore_btn)
-        close_btn = Gtk.Button(label="Close")
-        close_btn.add_css_class("suggested-action")
-        close_btn.connect("clicked", lambda *_: self.close())
-        btn_box.append(close_btn)
-        box.append(btn_box)
-
-        self.set_content(box)
-
-    def _on_copy(self, *_args):
-        buf = self.view.get_buffer()
-        display = self.get_display()
-        if display:
-            display.get_clipboard().set(buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False))
-
-    def _on_ignore(self, *_args):
-        if self.on_ignore:
-            self.on_ignore()
-        self.close()
 
 
 class LauncherWindow(Adw.ApplicationWindow):
@@ -236,7 +182,6 @@ class LauncherWindow(Adw.ApplicationWindow):
         return False
 
     def _delayed_startup_check(self):
-        threading.Thread(target=self._startup_deps_check, daemon=True).start()
         threading.Thread(target=self._sync_sources, daemon=True).start()
         return False
 
@@ -556,7 +501,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                 missing = [(n, d) for n, ok, d, req in check_build_deps() if req and not ok]
                 if missing:
                     text = "\n".join(f"- {n}: {d}" for n, d in missing)
-                    GLib.idle_add(self._show_deps_dialog, text)
+                    GLib.idle_add(self._show_deps_dialog, self, text)
                     self._set_status(f"Missing build dependencies: {', '.join(n for n, _d in missing)}")
                     return
                 idx = self.version_drop.get_selected()
@@ -621,8 +566,8 @@ Categories=Game;Emulator;
         folder.mkdir(parents=True, exist_ok=True)
         subprocess.Popen(_on_host(["xdg-open", str(folder)]))
 
-    def _show_deps_dialog(self, text):
-        DepsDialog(self, text, on_ignore=self._limit_to_downloads).present()
+    def _show_deps_dialog(self, parent, text):
+        DepsDialog(parent, text, on_ignore=self._limit_to_downloads).present()
         return False
 
     def _limit_to_downloads(self):
@@ -631,17 +576,6 @@ Categories=Game;Emulator;
         save_config(self.cfg)
         self._set_status("Source builds hidden. Re-enable in Settings.")
         self._refresh_versions()
-
-    def _startup_deps_check(self):
-        try:
-            missing = [(n, d) for n, ok, d, req in check_build_deps() if req and not ok]
-        except Exception:
-            return False
-        if missing and self.cfg.get("source_enabled", True):
-            text = "\n".join(f"- {n}: {d}" for n, d in missing)
-            GLib.idle_add(self._show_deps_dialog, text)
-            self._set_status(f"Missing build dependencies: {', '.join(n for n, _d in missing)}")
-        return False
 
     def _start_self_update_check(self):
         def worker():

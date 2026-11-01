@@ -13,6 +13,58 @@ env:
   APP_ID: dev.savagecore.EglantineLauncher
 
 jobs:
+  create-release:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release-id: ${{ steps.create.outputs.id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install git-cliff
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tmp=$(mktemp -d)
+          gh release download --repo orhun/git-cliff \
+            --pattern 'git-cliff-*-x86_64-unknown-linux-musl.tar.gz' \
+            --dir "$tmp"
+          tar xz -C "$tmp" -f "$tmp"/git-cliff-*-x86_64-unknown-linux-musl.tar.gz
+          sudo install -m 755 "$(find "$tmp" -name git-cliff -type f)" /usr/local/bin/git-cliff
+      - name: Generate release notes
+        id: cliff
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          {
+            echo "content<<EOF"
+            git cliff --latest --strip all
+            echo ""
+            echo "## Downloads"
+            echo ""
+            echo "| Platform | Download |"
+            echo "|----------|----------|"
+            echo "| Windows | [Portable .zip](${BASE}/eglantine-launcher-windows.zip) |"
+            echo "| Linux - portable | [Portable .zip](${BASE}/eglantine-launcher-linux.zip) |"
+            echo "| Linux - Debian/Ubuntu | [.deb package](${BASE}/eglantine-launcher_${VERSION}-1_amd64.deb) |"
+            echo "| Linux - Fedora/Nobara | [.rpm package](${BASE}/eglantine-launcher-${VERSION}-1.x86_64.rpm) |"
+            echo "| Linux - Flatpak | [Flatpak bundle](${BASE}/eglantine-launcher.flatpak) |"
+            echo ""
+            echo "> **Not sure which to pick?** Windows: unzip and run \`eglantine-launcher.exe\`. Linux: use your distro's native package (.deb/.rpm), the portable .zip for anything else, or Flatpak for a sandboxed install. Package repos (apt/dnf/flatpak remote) are at https://savagecore.github.io/eglantine-launcher/."
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      - name: Create GitHub Release
+        id: create
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Eglantine Launcher ${{ github.ref_name }}
+          body: ${{ steps.cliff.outputs.content }}
+
   build:
     strategy:
       matrix:
@@ -22,12 +74,32 @@ jobs:
           - os: windows-latest
             artifact: eglantine-launcher-windows
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: ${{ matrix.os == 'windows-latest' && 'msys2 {0}' || 'bash' }}
     steps:
       - uses: actions/checkout@v7
-      - name: Set up Python
+      - name: Set up Python (Linux)
+        if: matrix.os != 'windows-latest'
         uses: actions/setup-python@v7
         with:
           python-version: "3.11"
+      - name: Set up MSYS2 (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-python-pip
+            mingw-w64-ucrt-x86_64-python-gobject
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-libadwaita
+            mingw-w64-ucrt-x86_64-gdk-pixbuf2
+            mingw-w64-ucrt-x86_64-librsvg
+            mingw-w64-ucrt-x86_64-fontconfig
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
@@ -36,9 +108,17 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
           fi
-        shell: bash
       - name: Build with PyInstaller
         run: pyinstaller --noconfirm eglantine-launcher.spec
+      - name: Smoke test (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          ./dist/eglantine-launcher/eglantine-launcher.exe --check
+          test -f dist/eglantine-launcher/_internal/libgtk-4-1.dll
+          test -f dist/eglantine-launcher/_internal/libadwaita-1-0.dll
+          test -f dist/eglantine-launcher/eglantine-launcher.exe
+          ls dist/eglantine-launcher/_internal/lib/girepository-1.0/Gtk-4.0.typelib
+          ls dist/eglantine-launcher/_internal/share/glib-2.0/schemas/gschemas.compiled
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -109,26 +189,29 @@ jobs:
           path: eglantine-launcher.flatpak
 
   release:
-    needs: [build, pkgs, flatpak]
+    needs: [create-release, build, pkgs, flatpak]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
-      - name: Create release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Zip portable builds
         run: |
           cd artifacts
           zip -r eglantine-launcher-linux.zip eglantine-launcher-linux
           zip -r eglantine-launcher-windows.zip eglantine-launcher-windows
-          gh release create "${GITHUB_REF_NAME}" \
-            eglantine-launcher-linux.zip eglantine-launcher-windows.zip \
-            eglantine-launcher-pkgs/* eglantine-launcher-flatpak/eglantine-launcher.flatpak \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "Eglantine Launcher ${GITHUB_REF_NAME}" \
-            --notes "PyInstaller builds, native rpm/deb packages, and a Flatpak bundle." || true
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            artifacts/eglantine-launcher-linux.zip
+            artifacts/eglantine-launcher-windows.zip
+            artifacts/eglantine-launcher-pkgs/*
+            artifacts/eglantine-launcher-flatpak/eglantine-launcher.flatpak
 
   repos:
     needs: [pkgs, flatpak]

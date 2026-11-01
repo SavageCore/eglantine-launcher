@@ -65,7 +65,11 @@ def default_config():
     return {
         "project": "eglantine",
         "mode": "release",
-        "source_enabled": True,
+        # Windows users get downloads only by default; the toolchain list
+        # scares people off. They can opt into source builds in Settings.
+        # Source builds are opt-in: the toolchain list scares people off.
+        # Turning the Settings switch on runs a dependency check first.
+        "source_enabled": False,
         "pgo": True,
         "install_dir": str(_data_home()),
         "source_dir": str(_data_home() / "src"),

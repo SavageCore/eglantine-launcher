@@ -13,3 +13,11 @@ pre-commit:
       # the suite can never touch the developer's real config.
       env:
         XDG_CONFIG_HOME: /tmp/eglantine-launcher-test-config
+
+commit-msg:
+  commands:
+    conventional:
+      # Conventional-commit subject (types match cliff.toml), or a plain
+      # version bump (0.1.3). Merge commits are exempt (made in the UI).
+      run: |
+        bash -c 'msg="$(head -1 "{1}")"; case "$msg" in Merge\ *) exit 0;; esac; grep -qE "^(feat|fix|refactor|perf|docs|chore|style|test|ci|build)(\(.+\))?!?: .+|^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$" <<< "$msg" || { echo "commit subject must be conventional (type(scope): summary) or a version (x.y.z)"; exit 1; }'

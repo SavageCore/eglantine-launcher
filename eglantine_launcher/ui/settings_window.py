@@ -211,7 +211,7 @@ class SettingsWindow(Adw.Window):
 
         build_group = Adw.PreferencesGroup(title="Source builds")
         self.source_row = Adw.SwitchRow(title="Allow building from source")
-        self.source_row.set_subtitle("Turn off to hide source-build options")
+        self.source_row.set_subtitle("Shows source-build options after a dependency check")
         self.source_row.set_active(self.cfg.get("source_enabled", True))
         self.source_row.connect("notify::active", self._on_source_toggle)
         build_group.add(self.source_row)
@@ -268,10 +268,41 @@ class SettingsWindow(Adw.Window):
         self._refresh()
 
     def _on_source_toggle(self, row, _pspec):
+        if getattr(self, "_toggling", False):
+            return
         self.cfg["source_enabled"] = row.get_active()
         save_config(self.cfg)
         if self.on_changed:
             self.on_changed()
+        if row.get_active():
+            threading.Thread(target=self._check_deps_on_enable, daemon=True).start()
+
+    def _check_deps_on_enable(self):
+        from ..tasks import check_build_deps
+
+        try:
+            missing = [(n, d) for n, ok, d, req in check_build_deps() if req and not ok]
+        except Exception:
+            return
+        if missing:
+            text = "\n".join(f"- {n}: {d}" for n, d in missing)
+            GLib.idle_add(self._show_enable_deps_dialog, text)
+
+    def _show_enable_deps_dialog(self, text):
+        from .deps_dialog import DepsDialog
+
+        def revert():
+            self.cfg["source_enabled"] = False
+            save_config(self.cfg)
+            self._toggling = True
+            try:
+                self.source_row.set_active(False)
+            finally:
+                self._toggling = False
+            if self.on_changed:
+                self.on_changed()
+
+        DepsDialog(self, text, on_ignore=revert).present()
 
     def _set_token_status(self, msg):
         if msg:
