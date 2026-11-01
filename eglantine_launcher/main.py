@@ -49,6 +49,13 @@ def main() -> int:
     parser.add_argument("--launch", action="store_true", help="Alias for --auto")
     parser.add_argument("--check", action="store_true", help="Headless smoke test: build UI, print ok, exit")
     parser.add_argument(
+        "--quit-after",
+        type=int,
+        default=0,
+        metavar="SECONDS",
+        help="Quit automatically after N seconds (for scripted screenshots)",
+    )
+    parser.add_argument(
         "--color-scheme",
         choices=["default", "light", "dark"],
         default="default",
@@ -82,10 +89,14 @@ def main() -> int:
         return 0
 
     if args.color_scheme != "default":
-        from gi.repository import Adw as _Adw
+        _color_scheme = args.color_scheme
+    else:
+        _color_scheme = None
 
-        schemes = {"light": _Adw.ColorScheme.FORCE_LIGHT, "dark": _Adw.ColorScheme.FORCE_DARK}
-        _Adw.StyleManager.get_default().set_color_scheme(schemes[args.color_scheme])
+    if args.quit_after:
+        _quit_after = args.quit_after
+    else:
+        _quit_after = 0
 
     class App(Adw.Application):
         def __init__(self):
@@ -98,7 +109,12 @@ def main() -> int:
         def _on_startup(self, _app):
             from pathlib import Path
 
+            from gi.repository import Adw as _Adw
             from gi.repository import Gdk, Gtk
+
+            if _color_scheme is not None:
+                schemes = {"light": _Adw.ColorScheme.FORCE_LIGHT, "dark": _Adw.ColorScheme.FORCE_DARK}
+                _Adw.StyleManager.get_default().set_color_scheme(schemes[_color_scheme])
 
             icon_dir = Path(__file__).resolve().parents[1] / "data" / "icons"
             if icon_dir.exists():
@@ -114,6 +130,10 @@ def main() -> int:
                 self._window.on_settings()
             if args.about:
                 self._window.on_about()
+            if _quit_after:
+                from gi.repository import GLib
+
+                GLib.timeout_add_seconds(_quit_after, lambda: (app.quit(), False)[1])
 
     app = App()
     return app.run(sys.argv[:1])

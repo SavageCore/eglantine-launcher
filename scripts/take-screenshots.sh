@@ -30,14 +30,27 @@ which Xvfb xdotool import >/dev/null || {
   exit 1
 }
 
-# fresh X server so the desktop, theme and window size are deterministic
-Xvfb $DISP -screen 0 1280x900x24 &
+# never match a stale window from an earlier run
+pkill -f "eglantine_launcher --color-scheme" 2>/dev/null || true
+
+# fresh X server so the desktop, theme and window size are deterministic.
+# xkbcomp prints scary-but-harmless warnings on startup; keep them in a log.
+XVFB_LOG="$(mktemp)"
+Xvfb $DISP -screen 0 1280x900x24 2>"$XVFB_LOG" &
 XVFB_PID=$!
+trap 'kill $XVFB_PID 2>/dev/null; rm -rf "$SHOT_HOME" "$XVFB_LOG"' EXIT
 sleep 1
+if ! kill -0 $XVFB_PID 2>/dev/null; then
+  cat "$XVFB_LOG" >&2
+  exit 1
+fi
 
 shot() {
   local mode="$1" page="$2" extra="$3" title="$4" dest="$5"
-  DISPLAY=$DISP python3 -m eglantine_launcher --color-scheme "$mode" $extra &
+  echo "capturing $mode/$page..."
+  # the app quits itself after 8s: no kill races, no teardown segfaults,
+  # no stale window ids for the next shot
+  DISPLAY=$DISP python3 -m eglantine_launcher --color-scheme "$mode" --quit-after 8 $extra &
   local app_pid=$!
   # wait for the window, then capture it (border included for context)
   local win=""
@@ -45,19 +58,23 @@ shot() {
     win=$(DISPLAY=$DISP xdotool search --name "Eglantine Launcher" 2>/dev/null | head -1 || true)
     [ -n "$win" ] && break
     sleep 0.2
+    kill -0 $app_pid 2>/dev/null || break
   done
   if [ -z "$win" ]; then
     echo "window not found for $mode/$page" >&2
-    kill $app_pid 2>/dev/null || true
+    wait $app_pid 2>/dev/null || true
     return 1
   fi
   DISPLAY=$DISP xdotool windowactivate "$win" 2>/dev/null || true
   sleep 1.5
   mkdir -p "$(dirname "$dest")"
-  DISPLAY=$DISP import -window "$win" "$dest"
-  kill $app_pid 2>/dev/null || true
+  if DISPLAY=$DISP timeout 20 import -window "$win" "$dest"; then
+    echo "saved $dest"
+  else
+    echo "capture failed for $mode/$page" >&2
+    return 1
+  fi
   wait $app_pid 2>/dev/null || true
-  echo "saved $dest"
 }
 
 for mode in light dark; do
