@@ -298,6 +298,74 @@ def _record(cfg, key, value, limit=30):
     cfg[key] = [value, *items][:limit]
 
 
+def applications_dir():
+    xdg = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
+    return base / "applications"
+
+
+def _project_by_id(cfg, pid):
+    return next((p for p in cfg.get("projects", []) if p.get("id") == pid), {})
+
+
+def shortcut_name(project):
+    return f"{project.get('name', project.get('id', 'Eglantine'))} (EL)"
+
+
+def shortcut_path(cfg, pid):
+    safe = "".join(c if (c.isalnum() or c in "-_") else "-" for c in (pid or "eglantine"))
+    return applications_dir() / f"eglantine-launcher-{safe}.desktop"
+
+
+def project_icon(cfg, project):
+    """Cached emulator icon for the shortcut, or None to use the launcher icon."""
+    url = (project or {}).get("icon_url")
+    if not url:
+        return None
+    dest = Path(cfg["install_dir"]) / "icons" / f"{project.get('id', 'emu')}.png"
+    if dest.exists() and dest.stat().st_size > 0:
+        return dest
+    try:
+        download(url, dest)
+        return dest
+    except Exception:
+        return None
+
+
+def install_shortcut(cfg, pid, app_root):
+    """Create/update the per-emu desktop shortcut. Returns its path."""
+    project = _project_by_id(cfg, pid or cfg.get("project"))
+    if not project:
+        raise RuntimeError("Unknown project")
+    icon = project_icon(cfg, project)
+    if icon is None:
+        icon = Path(app_root) / "data" / "icons" / "eglantine-launcher.png"
+    content = f"""[Desktop Entry]
+Type=Application
+Name={shortcut_name(project)}
+Comment=Check for updates, then launch {project.get("name", project.get("id"))}
+Exec=env PYTHONPATH={app_root} {sys.executable} -m eglantine_launcher --auto --project {project["id"]}
+Icon={icon}
+Terminal=false
+Categories=Game;Emulator;
+"""
+    applications_dir().mkdir(parents=True, exist_ok=True)
+    path = shortcut_path(cfg, project["id"])
+    path.write_text(content)
+    try:
+        subprocess.run(["update-desktop-database", str(applications_dir())], capture_output=True)
+    except Exception:
+        pass
+    return path
+
+
+def remove_shortcut(cfg, pid):
+    path = shortcut_path(cfg, pid or cfg.get("project"))
+    if path.exists():
+        path.unlink()
+    return not path.exists()
+
+
 def source_dir(cfg):
     return Path(cfg["source_dir"]) / cfg.get("project", "eglantine")
 

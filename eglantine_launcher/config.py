@@ -45,6 +45,7 @@ DEFAULT_PROJECTS = [
         "releases_url": "https://api.github.com/repos/Djihads80/Eglantine/releases",
         "include_prerelease": True,
         "exclude_keywords": _default_exclude_keywords(),
+        "icon_url": "https://github.com/Djihads80/Eglantine/raw/refs/heads/nx2/dist/Eglantine.png",
     },
     {
         "id": "pokedinner",
@@ -53,6 +54,7 @@ DEFAULT_PROJECTS = [
         "branch": "master",
         "releases_url": "https://git.eden-emu.dev/api/v1/repos/Franseven/PokeDinner-a-Eglantine-Fork/releases",
         "include_prerelease": True,
+        "icon_url": "https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork/raw/branch/master/dist/Eglantine.png",
     },
 ]
 

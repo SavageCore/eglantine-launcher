@@ -362,3 +362,29 @@ def test_sources_json_matches_builtins():
         match = next(s for s in shipped if s["id"] == default["id"])
         for field in ("name", "source_url", "branch", "releases_url"):
             assert match[field] == default[field], field
+
+
+def test_shortcut_install_remove_roundtrip(tmp_path, fake_home, monkeypatch):
+    from eglantine_launcher import tasks
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    cfg = {
+        "project": "eglantine",
+        "install_dir": str(tmp_path / "install"),
+        "projects": [{"id": "eglantine", "name": "Eglantine", "icon_url": None}],
+    }
+    path = tasks.install_shortcut(cfg, "eglantine", "/app/root")
+    assert path.name == "eglantine-launcher-eglantine.desktop"
+    text = path.read_text()
+    assert "Name=Eglantine (EL)" in text
+    assert "--auto --project eglantine" in text
+    assert tasks.shortcut_path(cfg, "eglantine").exists()
+    assert tasks.remove_shortcut(cfg, "eglantine") is True
+    assert not path.exists()
+
+
+def test_shortcut_name_fallback():
+    from eglantine_launcher.tasks import shortcut_name
+
+    assert shortcut_name({"id": "abc"}) == "abc (EL)"
+    assert shortcut_name({}) == "Eglantine (EL)"

@@ -124,6 +124,10 @@ class ProjectEditDialog(Adw.Window):
             self.project.get("exclude_keywords", prefill.get("exclude_keywords", "")) or ""
         )
         group2.add(self.exclude_entry)
+
+        self.icon_entry = Adw.EntryRow(title="Icon URL (for desktop shortcut)")
+        self.icon_entry.set_text(self.project.get("icon_url", "") or "")
+        group2.add(self.icon_entry)
         box.append(group2)
 
         hint = Gtk.Label(label="Releases auto-fill from the repo link. Leave empty for source-only forks.")
@@ -160,6 +164,7 @@ class ProjectEditDialog(Adw.Window):
             "releases_url": self.releases_entry.get_text().strip() or None,
             "include_prerelease": self.prerelease_row.get_active(),
             "exclude_keywords": self.exclude_entry.get_text().strip(),
+            "icon_url": self.icon_entry.get_text().strip() or None,
         }
         if self.on_save:
             self.on_save(project, old_id)

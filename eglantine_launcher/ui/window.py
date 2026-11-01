@@ -1,5 +1,4 @@
 import subprocess
-import sys
 import threading
 from pathlib import Path
 
@@ -18,11 +17,15 @@ from ..tasks import (
     check_build_deps,
     check_release,
     fetch_remote_sources,
+    install_shortcut,
     is_windows,
     launch,
     list_commits,
     list_releases,
     release_platforms,
+    remove_shortcut,
+    shortcut_name,
+    shortcut_path,
 )
 from ..tasks import arch as get_arch
 from .deps_dialog import DepsDialog
@@ -106,6 +109,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.project_row.connect("notify::selected", self._on_selector_changed)
         self.mode_row.connect("notify::selected", self._on_selector_changed)
         GLib.idle_add(self._refresh_versions)
+        GLib.idle_add(self._refresh_shortcut_btn)
         GLib.idle_add(self._start_self_update_check)
         GLib.timeout_add_seconds(1, self._delayed_startup_check)
         if not auto:
@@ -350,6 +354,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         if self._updating:
             return
         self._save_choices()
+        self._refresh_shortcut_btn()
         self._refresh_versions()
 
     def _refresh_versions(self):
@@ -537,40 +542,27 @@ class LauncherWindow(Adw.ApplicationWindow):
 
                 GLib.timeout_add_seconds(2, _quit)
 
+    def _refresh_shortcut_btn(self):
+        info = self._current_info()
+        pid = info.get("id", self.cfg.get("project"))
+        self.shortcut_btn.set_label(
+            "Remove Shortcut" if shortcut_path(self.cfg, pid).exists() else "Install Shortcut"
+        )
+
     def on_install_shortcut(self, *_args):
         try:
-            self._install_shortcut()
-            self._set_status("Shortcut installed.")
+            info = self._current_info()
+            pid = info.get("id", self.cfg.get("project"))
+            if shortcut_path(self.cfg, pid).exists():
+                remove_shortcut(self.cfg, pid)
+                self._set_status("Shortcut removed.")
+            else:
+                app_root = Path(__file__).resolve().parents[2]
+                install_shortcut(self.cfg, pid, app_root)
+                self._set_status(f"Shortcut installed: {shortcut_name(info)}.")
+            self._refresh_shortcut_btn()
         except Exception as e:
             self._set_status(f"Shortcut error: {e}", sticky=True)
-
-    def _install_shortcut(self):
-        # fallback: module invocation
-        desktop_dir = Path.home() / ".local" / "share" / "applications"
-        desktop_dir.mkdir(parents=True, exist_ok=True)
-        desktop_file = desktop_dir / "eglantine-launcher.desktop"
-        icon_src = Path(__file__).resolve().parents[2] / "data" / "icons" / "eglantine-launcher.svg"
-        icon_dest = Path.home() / ".local" / "share" / "eglantine-launcher" / "icon.svg"
-        icon_dest.parent.mkdir(parents=True, exist_ok=True)
-        if icon_src.exists():
-            import shutil
-
-            shutil.copyfile(icon_src, icon_dest)
-        icon_line = str(icon_dest) if icon_dest.exists() else "application-x-executable"
-        content = f"""[Desktop Entry]
-Type=Application
-Name=Eglantine Launcher
-Comment=Launch Eglantine (checks for updates)
-Exec=env PYTHONPATH={Path(__file__).resolve().parents[2]} {sys.executable} -m eglantine_launcher --auto
-Icon={icon_line}
-Terminal=false
-Categories=Game;Emulator;
-"""
-        desktop_file.write_text(content)
-        # update desktop database if available
-        import subprocess
-
-        subprocess.run(["update-desktop-database", str(desktop_dir)], capture_output=True)
 
     def on_open_folder(self, *_args):
         folder = Path(self.cfg["install_dir"])
@@ -636,7 +628,6 @@ Categories=Game;Emulator;
     def reload_projects(self):
         # Settings saves a new config to disk; re-read it so toggles apply instantly
         self.cfg = load_config()
-        # rebuild project combo
         self._updating = True
         try:
             model = Gtk.StringList.new([p.get("name", p.get("id")) for p in self.cfg.get("projects", [])])
@@ -651,6 +642,7 @@ Categories=Game;Emulator;
                     self.cfg["project"] = ids[0]
         finally:
             self._updating = False
+        self._refresh_shortcut_btn()
         self._refresh_versions()
 
     def on_about(self, *_args):

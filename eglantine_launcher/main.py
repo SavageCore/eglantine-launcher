@@ -47,6 +47,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Eglantine launcher")
     parser.add_argument("--auto", action="store_true", help="Check updates and launch automatically")
     parser.add_argument("--launch", action="store_true", help="Alias for --auto")
+    parser.add_argument(
+        "--project", metavar="ID", default=None, help="Emulator source to use (for shortcuts)"
+    )
     parser.add_argument("--check", action="store_true", help="Headless smoke test: build UI, print ok, exit")
     parser.add_argument(
         "--quit-after",
@@ -66,6 +69,15 @@ def main() -> int:
     args = parser.parse_args()
 
     auto = args.auto or args.launch
+
+    if args.project:
+        from .config import load as _load_config
+        from .config import save as _save_config
+
+        _cfg = _load_config()
+        if any(p.get("id") == args.project for p in _cfg.get("projects", [])):
+            _cfg["project"] = args.project
+            _save_config(_cfg)
 
     _ensure_win32_pixbuf()
 
