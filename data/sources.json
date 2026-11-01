@@ -1,0 +1,20 @@
+{
+  "sources": [
+    {
+      "id": "eglantine",
+      "name": "Eglantine",
+      "source_url": "https://github.com/Djihads80/Eglantine.git",
+      "branch": "nx2",
+      "releases_url": "https://api.github.com/repos/Djihads80/Eglantine/releases",
+      "include_prerelease": true
+    },
+    {
+      "id": "pokedinner",
+      "name": "PokeDinner (Pokopia)",
+      "source_url": "https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork.git",
+      "branch": "master",
+      "releases_url": "https://git.eden-emu.dev/api/v1/repos/Franseven/PokeDinner-a-Eglantine-Fork/releases",
+      "include_prerelease": true
+    }
+  ]
+}

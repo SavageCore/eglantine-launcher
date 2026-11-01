@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.savagecore.EglantineLauncher</id>
+  <name>Eglantine Launcher</name>
+  <summary>Download, build and launch Eglantine and community forks</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <description>
+    <p>Simple launcher for Eglantine and community Switch-emulator forks.
+    Downloads release builds or builds from source, checks for updates, then launches.</p>
+  </description>
+  <launchable type="desktop-id">dev.savagecore.EglantineLauncher.desktop</launchable>
+  <url type="homepage">https://github.com/SavageCore/eglantine-launcher</url>
+</component>

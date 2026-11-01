@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Eglantine Launcher
+Comment=Launch Eglantine (checks for updates)
+Exec=eglantine-launcher
+Icon=eglantine-launcher
+Terminal=false
+Categories=Game;Emulator;

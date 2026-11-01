@@ -1,0 +1,35 @@
+name: eglantine-launcher
+arch: amd64
+# CI rewrites this line with the tag version before packaging
+version: "0.0.0"
+release: 1
+section: utils
+priority: optional
+maintainer: SavageCore
+description: |
+  Launcher for Eglantine and community Switch-emulator forks.
+  Downloads release builds or builds from source, checks for updates, then launches.
+vendor: SavageCore
+homepage: https://github.com/SavageCore/eglantine-launcher
+license: GPL-3.0-or-later
+
+depends:
+  - python3 (>= 3.10)
+  - python3-gi
+  - gir1.2-gtk-4.0
+  - gir1.2-adw-1
+  - git
+
+contents:
+  - src: ./stage/usr
+    dst: /usr
+    type: tree
+
+overrides:
+  rpm:
+    depends:
+      - python3 >= 3.10
+      - python3-gobject
+      - gtk4
+      - libadwaita
+      - git

@@ -1,0 +1,36 @@
+name: New emulator source
+description: Suggest a fork for the launcher to track
+title: "[source]: "
+labels: ["new-source"]
+body:
+  - type: input
+    id: name
+    attributes:
+      label: Emulator name
+      description: Display name, e.g. Eglantine or PokeDinner
+      placeholder: PokeDinner
+    validations:
+      required: true
+  - type: input
+    id: repo
+    attributes:
+      label: Repository link
+      description: GitHub or Forgejo repo URL
+      placeholder: https://github.com/owner/repo
+    validations:
+      required: true
+  - type: input
+    id: branch
+    attributes:
+      label: Branch to build from
+      description: Branch the launcher checks for new commits
+      placeholder: master
+    validations:
+      required: false
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Anything relevant, e.g. which games it targets, release asset names
+    validations:
+      required: false

@@ -1,0 +1,174 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  APP_ID: dev.savagecore.EglantineLauncher
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: eglantine-launcher-linux
+          - os: windows-latest
+            artifact: eglantine-launcher-windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
+          fi
+        shell: bash
+      - name: Build with PyInstaller
+        run: pyinstaller --noconfirm eglantine-launcher.spec
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/eglantine-launcher/
+
+  pkgs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Stage files
+        run: |
+          set -e
+          rm -rf stage
+          mkdir -p stage/usr/lib/eglantine-launcher stage/usr/bin \
+            stage/usr/share/applications stage/usr/share/icons/hicolor/scalable/apps \
+            stage/usr/share/metainfo
+          cp -r eglantine_launcher stage/usr/lib/eglantine-launcher/
+          find stage -name __pycache__ -type d -prune -exec rm -rf {} +
+          install -m755 packaging/eglantine-launcher.sh stage/usr/bin/eglantine-launcher
+          install -m644 packaging/dev.savagecore.EglantineLauncher.desktop stage/usr/share/applications/
+          install -m644 data/icons/eglantine-launcher.svg \
+            stage/usr/share/icons/hicolor/scalable/apps/eglantine-launcher.svg
+          install -m644 data/dev.savagecore.EglantineLauncher.metainfo.xml stage/usr/share/metainfo/
+      - name: Install nfpm
+        run: |
+          curl -fsSL -o /tmp/nfpm.tar.gz \
+            https://github.com/goreleaser/nfpm/releases/download/v2.48.0/nfpm_2.48.0_Linux_x86_64.tar.gz
+          tar -xzf /tmp/nfpm.tar.gz nfpm
+          sudo install -m755 nfpm /usr/local/bin/nfpm
+      - name: Build rpm and deb
+        run: |
+          # strip a leading v from tags (v0.1.0 -> 0.1.0)
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "s/^version: .*/version: \"${VERSION:-0.0.0}\"/" packaging/nfpm.yaml
+          grep '^version:' packaging/nfpm.yaml
+          nfpm package --config packaging/nfpm.yaml --packager deb --target .
+          nfpm package --config packaging/nfpm.yaml --packager rpm --target .
+          ls -la ./*.deb ./*.rpm
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: eglantine-launcher-pkgs
+          path: |
+            eglantine-launcher*.deb
+            eglantine-launcher*.rpm
+
+  flatpak:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install flatpak tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          sudo flatpak install -y flathub org.gnome.Platform//48 org.gnome.Sdk//48
+      - name: Build
+        run: |
+          flatpak-builder --force-clean --repo=repo build-dir \
+            flatpak/${{ env.APP_ID }}.json
+          flatpak build-bundle repo eglantine-launcher.flatpak ${{ env.APP_ID }}
+          ls -la eglantine-launcher.flatpak
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: eglantine-launcher-flatpak
+          path: eglantine-launcher.flatpak
+
+  release:
+    needs: [build, pkgs, flatpak]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd artifacts
+          zip -r eglantine-launcher-linux.zip eglantine-launcher-linux
+          zip -r eglantine-launcher-windows.zip eglantine-launcher-windows
+          gh release create "${GITHUB_REF_NAME}" \
+            eglantine-launcher-linux.zip eglantine-launcher-windows.zip \
+            eglantine-launcher-pkgs/* eglantine-launcher-flatpak/eglantine-launcher.flatpak \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Eglantine Launcher ${GITHUB_REF_NAME}" \
+            --notes "PyInstaller builds, native rpm/deb packages, and a Flatpak bundle." || true
+
+  repos:
+    needs: [pkgs, flatpak]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: eglantine-launcher-pkgs
+          path: artifacts/pkgs
+      - uses: actions/download-artifact@v8
+        with:
+          name: eglantine-launcher-flatpak
+          path: artifacts/flatpak-bundle
+      - name: Build apt/dnf/flatpak repos
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev createrepo-c flatpak ostree
+          site=_site
+          rm -rf "$site"
+          mkdir -p "$site/apt" "$site/dnf"
+          cp artifacts/pkgs/*.deb "$site/apt/"
+          cp artifacts/pkgs/*.rpm "$site/dnf/"
+          (cd "$site/apt" && dpkg-scanpackages --multiversion . /dev/null | gzip -9c > Packages.gz)
+          createrepo_c "$site/dnf"
+          ostree --repo="$site/flatpak" init --mode=archive-z2 || true
+          flatpak build-import-bundle "$site/flatpak" \
+            artifacts/flatpak-bundle/eglantine-launcher.flatpak
+          flatpak build-update-repo "$site/flatpak"
+          cp flatpak/eglantine-launcher.flatpakref "$site/flatpak/"
+          cp packaging/gh-pages-index.html "$site/index.html"
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4.1.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./_site
+          keep_files: true

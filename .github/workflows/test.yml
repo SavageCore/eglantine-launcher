@@ -1,0 +1,42 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 xvfb
+
+      - name: Install dev deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "ruff>=0.14" "pytest>=8"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Format check
+        run: ruff format --check .
+
+      - name: Tests
+        env:
+          # system PyGObject (apt) lives here; setup-python's Python needs it on the path
+          PYTHONPATH: /usr/lib/python3/dist-packages
+          # never touch a real config if tests run somewhere with one
+          XDG_CONFIG_HOME: /tmp/eglantine-launcher-test-config
+        run: xvfb-run -a pytest -q

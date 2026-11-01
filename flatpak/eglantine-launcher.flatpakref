@@ -1,0 +1,7 @@
+[Flatpak Ref]
+Title=Eglantine Launcher
+Name=dev.savagecore.EglantineLauncher
+Branch=stable
+Url=https://savagecore.github.io/eglantine-launcher/flatpak/
+IsRuntime=false
+RuntimeRepo=https://flathub.org/repo/flathub.flatpakrepo
