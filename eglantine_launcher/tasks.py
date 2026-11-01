@@ -286,27 +286,54 @@ def download(url, dest, progress_cb=None):
     return dest
 
 
-def find_release_for_commit(cfg, sha):
-    """Newest release tag whose matching asset was built from sha (or None).
+def _release_commit_map(cfg, project):
+    """Map release tag -> commit sha via the tags API (exact, no guessing)."""
+    host, owner, repo = parse_repo((project or {}).get("source_url", ""))
+    if not owner or not repo:
+        return {}
+    if host == "github":
+        url = f"https://api.github.com/repos/{owner}/{repo}/tags?per_page=100"
+    else:
+        url = f"https://{host}/api/v1/repos/{owner}/{repo}/tags?limit=100"
+    try:
+        tags = api_get_json(url, cfg, timeout=20)
+    except Exception:
+        return {}
+    result = {}
+    for t in tags if isinstance(tags, list) else []:
+        name = t.get("name") if isinstance(t, dict) else None
+        commit = (t.get("commit") or {}) if isinstance(t, dict) else {}
+        sha = commit.get("sha") if isinstance(commit, dict) else None
+        if name and sha:
+            result[name] = sha
+    return result
 
-    Matches on the full sha in asset/tag names, or the 7-char prefix in
-    asset/tag names (releases like Eglantine embed the commit in file names).
+
+def find_release_for_commit(cfg, sha):
+    """Newest release tag built from exactly this commit (or None to build).
+
+    Resolves each release tag to its commit via the tags API and compares full
+    SHAs - no filename guessing. If the newest matching release has no
+    downloadable asset for this platform, returns None so the caller falls
+    back to a source build instead of digging through older releases.
     """
     if not sha:
         return None
-    short = sha[:7]
+    project = project_info(cfg)
+    commits = _release_commit_map(cfg, project)
+    if not commits:
+        return None
     try:
         rels = list_releases(cfg)
     except Exception:
         return None
     for rel in rels:
-        tag = rel.get("tag_name") or ""
-        asset = find_asset(tag, rel.get("assets", []), cfg.get("pgo", True))
-        if not asset:
+        tag = rel.get("tag_name", "")
+        if not tag or commits.get(tag) != sha:
             continue
-        name = asset.get("name", "")
-        if sha in name or sha in tag or short in name or short in tag:
-            return tag
+        if find_asset(tag, rel.get("assets", []), cfg.get("pgo", True)) is None:
+            return None
+        return tag
     return None
 
 

@@ -390,76 +390,89 @@ def test_shortcut_name_fallback():
     assert shortcut_name({}) == "Eglantine (EL)"
 
 
-def _rel_cfg(monkeypatch, patch_urlopen):
-    patch_urlopen(
-        [
-            {
-                "tag_name": "build-99",
-                "name": "AMD experimental",
-                "body": "",
-                "prerelease": True,
-                "assets": [
-                    {
-                        "name": "eglantine-a42b4d4c744e12ce5262648eee50daecd1ca456-linux-x86_64.AppImage",
-                        "browser_download_url": "https://x/a",
-                    }
-                ],
-            },
-            {
-                "tag_name": "build-98",
-                "name": "regular",
-                "body": "",
-                "prerelease": True,
-                "assets": [
-                    {
-                        "name": "eglantine-def456-linux-x86_64.AppImage",
-                        "browser_download_url": "https://x/b",
-                    }
-                ],
-            },
-        ]
-    )
-    return {"project": "t", "pgo": False, "projects": [{"id": "t", "releases_url": "https://x/y"}]}
-
-
-def test_find_release_for_commit_full_sha(patch_urlopen, monkeypatch):
-    from eglantine_launcher.tasks import find_release_for_commit
-
-    cfg = _rel_cfg(monkeypatch, patch_urlopen)
-    assert find_release_for_commit(cfg, "a42b4d4c744e12ce5262648eee50daecd1ca456") == "build-99"
-
-
-def test_find_release_for_commit_short_sha_in_tag(patch_urlopen, monkeypatch):
+def _url_fixture(monkeypatch, releases, tags):
     import urllib.request
 
-    from eglantine_launcher import tasks
+    from conftest import FakeResponse
 
-    class Resp:
-        def read(self_inner):
-            import json
+    def fake(url_or_req, timeout=None):
+        url = url_or_req.full_url if hasattr(url_or_req, "full_url") else url_or_req
+        if "/tags" in url:
+            return FakeResponse(tags)
+        return FakeResponse(releases)
 
-            return json.dumps(
-                [
-                    {
-                        "tag_name": "v1.0-abc1234",
-                        "name": "",
-                        "body": "",
-                        "prerelease": False,
-                        "assets": [
-                            {"name": "app-linux-x86_64.AppImage", "browser_download_url": "https://x"}
-                        ],
-                    }
-                ]
-            ).encode()
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
 
-        def __enter__(self):
-            return self
 
-        def __exit__(self, *a):
-            return False
+def _match_cfg(**overrides):
+    info = {
+        "id": "t",
+        "name": "Test",
+        "source_url": "https://github.com/o/r.git",
+        "branch": "main",
+        "releases_url": "https://api.github.com/repos/o/r/releases",
+        "include_prerelease": True,
+    }
+    info.update(overrides)
+    return {"project": "t", "pgo": False, "projects": [info]}
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: Resp())
-    cfg = {"project": "t", "pgo": False, "projects": [{"id": "t", "releases_url": "https://x/y"}]}
-    assert tasks.find_release_for_commit(cfg, "abc1234def5678") == "v1.0-abc1234"
-    assert tasks.find_release_for_commit(cfg, "0000000000000") is None
-    assert tasks.find_release_for_commit(cfg, "") is None
+
+def test_find_release_for_commit_exact_match(monkeypatch):
+    from eglantine_launcher.tasks import find_release_for_commit
+
+    releases = [
+        {
+            "tag_name": "build-99",
+            "name": "AMD experimental",
+            "body": "",
+            "prerelease": True,
+            "assets": [
+                {
+                    "name": "eglantine-a42b4d4c744e12ce5262648eee50daecd1ca456-linux-x86_64.AppImage",
+                    "browser_download_url": "https://x/a",
+                }
+            ],
+        },
+        {
+            "tag_name": "build-98",
+            "name": "regular",
+            "body": "",
+            "prerelease": True,
+            "assets": [
+                {
+                    "name": "eglantine-def456-linux-x86_64.AppImage",
+                    "browser_download_url": "https://x/b",
+                }
+            ],
+        },
+    ]
+    tags = [
+        {"name": "build-99", "commit": {"sha": "a42b4d4c744e12ce5262648eee50daecd1ca456"}},
+        {"name": "build-98", "commit": {"sha": "def4560000000000000000000000000000000000"}},
+    ]
+    _url_fixture(monkeypatch, releases, tags)
+    cfg = _match_cfg()
+    assert find_release_for_commit(cfg, "a42b4d4c744e12ce5262648eee50daecd1ca456") == "build-99"
+    assert find_release_for_commit(cfg, "def4560000000000000000000000000000000000") == "build-98"
+    assert find_release_for_commit(cfg, "0000000000000000000000000000000000000000") is None
+    assert find_release_for_commit(cfg, "a42b4d4") is None
+    assert find_release_for_commit(cfg, "") is None
+
+
+def test_find_release_for_commit_no_asset_falls_back_to_source(monkeypatch):
+    from eglantine_launcher.tasks import find_release_for_commit
+
+    releases = [
+        {
+            "tag_name": "build-99",
+            "name": "Windows only",
+            "body": "",
+            "prerelease": True,
+            "assets": [{"name": "eglantine-win64.zip", "browser_download_url": "https://x/a"}],
+        }
+    ]
+    tags = [{"name": "build-99", "commit": {"sha": "a42b4d4c744e12ce5262648eee50daecd1ca456"}}]
+    _url_fixture(monkeypatch, releases, tags)
+    cfg = _match_cfg()
+    # commit matches, but no Linux asset: build from source instead
+    assert find_release_for_commit(cfg, "a42b4d4c744e12ce5262648eee50daecd1ca456") is None
