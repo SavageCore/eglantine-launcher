@@ -52,3 +52,12 @@ def test_flatpakref():
 def test_app_id_matches_code():
     init = (REPO / "eglantine_launcher" / "__init__.py").read_text()
     assert f'APP_ID = "{APP_ID}"' in init
+
+
+def test_readme_images_exist():
+    import re
+
+    for md in ["README.md", "docs/screenshots/README.md"]:
+        text = (REPO / md).read_text()
+        for src in re.findall(r"src=\"([^\"]+\.(?:png|svg))\"", text):
+            assert (REPO / src).exists(), f"{md}: missing {src}"

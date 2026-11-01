@@ -1,7 +1,18 @@
 # Eglantine Launcher
 
+<img src="data/icons/eglantine-launcher.png" width="128" alt="Eglantine Launcher icon" />
+
 A small libadwaita launcher for [Eglantine](https://github.com/Djihads80/Eglantine)
 and community forks such as [PokeDinner](https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork).
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/light/main.png" alt="Light mode" /></td>
+    <td><img src="docs/screenshots/dark/main.png" alt="Dark mode" /></td>
+  </tr>
+</table>
+
+[More screenshots →](docs/screenshots/)
 
 ## Features
 

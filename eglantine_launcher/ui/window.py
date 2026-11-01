@@ -194,8 +194,17 @@ class LauncherWindow(Adw.ApplicationWindow):
         except Exception:
             pass
 
-    def _set_status(self, text):
+    def _set_status(self, text, sticky=False):
+        self._status_seq = getattr(self, "_status_seq", 0) + 1
+        seq = self._status_seq
         GLib.idle_add(self.status_label.set_label, text)
+        if not sticky and text:
+            GLib.timeout_add_seconds(8, lambda: self._clear_status(seq))
+
+    def _clear_status(self, seq):
+        if getattr(self, "_status_seq", 0) == seq:
+            self.status_label.set_label("")
+        return False
 
     def _set_progress(self, frac):
         GLib.idle_add(self.progress.set_fraction, frac)
@@ -502,7 +511,9 @@ class LauncherWindow(Adw.ApplicationWindow):
                 if missing:
                     text = "\n".join(f"- {n}: {d}" for n, d in missing)
                     GLib.idle_add(self._show_deps_dialog, self, text)
-                    self._set_status(f"Missing build dependencies: {', '.join(n for n, _d in missing)}")
+                    self._set_status(
+                        f"Missing build dependencies: {', '.join(n for n, _d in missing)}", sticky=True
+                    )
                     return
                 idx = self.version_drop.get_selected()
                 commit = self._commit_shas[idx - 1] if idx > 0 and idx - 1 < len(self._commit_shas) else None
@@ -514,7 +525,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                 )
                 launch(binary)
         except Exception as e:
-            self._set_status(f"Error: {e}")
+            self._set_status(f"Error: {e}", sticky=True)
         finally:
             self._set_busy(False)
             GLib.idle_add(self.progress.set_fraction, 0.0)
@@ -531,7 +542,7 @@ class LauncherWindow(Adw.ApplicationWindow):
             self._install_shortcut()
             self._set_status("Shortcut installed.")
         except Exception as e:
-            self._set_status(f"Shortcut error: {e}")
+            self._set_status(f"Shortcut error: {e}", sticky=True)
 
     def _install_shortcut(self):
         # fallback: module invocation

@@ -48,6 +48,14 @@ def main() -> int:
     parser.add_argument("--auto", action="store_true", help="Check updates and launch automatically")
     parser.add_argument("--launch", action="store_true", help="Alias for --auto")
     parser.add_argument("--check", action="store_true", help="Headless smoke test: build UI, print ok, exit")
+    parser.add_argument(
+        "--color-scheme",
+        choices=["default", "light", "dark"],
+        default="default",
+        help="Force libadwaita color scheme (default follows the system)",
+    )
+    parser.add_argument("--settings", action="store_true", help="Open the Settings window on launch")
+    parser.add_argument("--about", action="store_true", help="Open the About dialog on launch")
     args = parser.parse_args()
 
     auto = args.auto or args.launch
@@ -73,6 +81,12 @@ def main() -> int:
         print("ok")
         return 0
 
+    if args.color_scheme != "default":
+        from gi.repository import Adw as _Adw
+
+        schemes = {"light": _Adw.ColorScheme.FORCE_LIGHT, "dark": _Adw.ColorScheme.FORCE_DARK}
+        _Adw.StyleManager.get_default().set_color_scheme(schemes[args.color_scheme])
+
     class App(Adw.Application):
         def __init__(self):
             super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.NON_UNIQUE)
@@ -96,6 +110,10 @@ def main() -> int:
             if self._window is None:
                 self._window = LauncherWindow(app, auto=self._auto)
             self._window.present()
+            if args.settings:
+                self._window.on_settings()
+            if args.about:
+                self._window.on_about()
 
     app = App()
     return app.run(sys.argv[:1])
