@@ -31,3 +31,19 @@ anything else, so get it right the first time:
 `type(scope): summary` (e.g. `fix(source): ...`), a plain version
 (`0.1.3`), or `Merge ...`. Allowed types: feat, fix, refactor, perf,
 docs, chore, style, test, ci, build.
+
+## Release
+
+```sh
+make release          # patch bump (0.1.6 -> 0.1.7)
+make release patch    # same as above
+make release minor    # 0.1.6 -> 0.2.0
+make release major    # 0.1.6 -> 1.0.0
+make release V=0.2.0  # explicit version (cannot combine with a bump type)
+```
+
+`scripts/release.sh` requires main with a clean tree, runs `make check`,
+bumps `__version__` in `eglantine_launcher/__init__.py`, commits (message
+is the version only), pushes main, tags `v<version>`, and pushes the tag.
+CI builds the release from the tag. Patch bumps are the norm here, even
+for feats.
