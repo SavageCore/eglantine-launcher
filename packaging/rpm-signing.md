@@ -32,8 +32,10 @@ gh secret list --repo SavageCore/eglantine-launcher
 ```
 
 CI imports it in `pkgs` (for `rpm --addsign`) and in `repos` (for
-signing `repodata/repomd.xml`). If the secret is missing (forks),
-the build continues unsigned and prints a warning.
+signing `repodata/repomd.xml`). Tag builds fail if the secret is
+missing, so an unsigned RPM or unsigned repodata can never be
+published. Only non-tag runs (forks / local `workflow_dispatch`)
+continue unsigned with a warning.
 
 ## What CI does
 

@@ -164,6 +164,10 @@ jobs:
         run: |
           set -e
           if [ -z "${RPM_SIGNING_KEY:-}" ]; then
+            if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then
+              echo "ERROR: RPM_SIGNING_KEY is empty - refusing to publish unsigned RPM for tag ${GITHUB_REF_NAME}."
+              exit 1
+            fi
             echo "RPM_SIGNING_KEY is empty - leaving RPM unsigned (forks / local runs)."
             exit 0
           fi
@@ -270,15 +274,23 @@ jobs:
           cp artifacts/pkgs/*.rpm "$site/dnf/"
           (cd "$site/apt" && dpkg-scanpackages --multiversion . /dev/null | gzip -9c > Packages.gz)
           createrepo_c "$site/dnf"
-          if [ -n "${RPM_SIGNING_KEY:-}" ]; then
+          if [ -z "${RPM_SIGNING_KEY:-}" ]; then
+            if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then
+              echo "ERROR: RPM_SIGNING_KEY is empty - refusing to publish unsigned dnf repo for tag ${GITHUB_REF_NAME}."
+              exit 1
+            fi
+            echo "WARNING: RPM_SIGNING_KEY is empty - repodata left unsigned."
+          else
             printf '%s' "$RPM_SIGNING_KEY" | gpg --batch --import
             gpg --batch --yes --pinentry-mode loopback --passphrase '' \
               --detach-sign --armor \
               -u "Eglantine Launcher <eglantine-launcher@savagecore.github.io>" \
               "$site/dnf/repodata/repomd.xml"
-          else
-            echo "WARNING: RPM_SIGNING_KEY is empty - repodata left unsigned."
+            test -f "$site/dnf/repodata/repomd.xml.asc"
           fi
+          # nobara-updater replays with localpkg_gpgcheck=1: never publish unsigned RPMs
+          sudo rpm --import packaging/RPM-GPG-KEY-eglantine-launcher
+          rpm -K "$site/dnf/"*.rpm
           cp packaging/RPM-GPG-KEY-eglantine-launcher "$site/dnf/"
           cp packaging/eglantine-launcher.repo "$site/dnf/"
           ls -la "$site/dnf/" "$site/dnf/repodata/"
