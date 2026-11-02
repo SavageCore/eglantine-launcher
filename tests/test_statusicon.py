@@ -74,7 +74,10 @@ def watcher(session_bus):
     # deadlocks _show's blocking Register call on some GLib versions:
     # the handler never gets dispatched and call_sync times out.
     addr = os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+    import sys
+
     if not addr:
+        print("watcher: no DBUS_SESSION_BUS_ADDRESS", file=sys.stderr)
         yield None
         return
     try:
@@ -99,10 +102,14 @@ def watcher(session_bus):
             -1,
             None,
         )
+        print(f"watcher: RequestName owned={owned[0]}", file=sys.stderr)
         if owned[0] != 1:
             yield None
             return
     except Exception:
+        import traceback
+
+        traceback.print_exc()
         yield None
         return
     fake = FakeWatcher(wconn)
