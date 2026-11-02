@@ -222,14 +222,17 @@ def test_launch_choice_saves_applies_and_launches(needs_display, fake_home, monk
     try:
         applied = []
         begun = []
-        monkeypatch.setattr(winmod, "hide_to_tray", lambda _w: applied.append("tray"))
+        monkeypatch.setattr(window, "_hide_to_tray", lambda: applied.append("tray"))
         monkeypatch.setattr(winmod, "minimize_to_taskbar", lambda _w: applied.append("taskbar"))
         monkeypatch.setattr(window, "_begin_launch", lambda: begun.append(True))
         dlg = _FakeDialog()
         window._on_launch_choice(dlg, "tray")
         assert dlg.closed
         assert load()["minimize_on_launch"] == "tray"
-        assert applied == ["tray"]
+        assert window._launch_hide == "tray"
+        assert window._hidden_for_launch is True
+        # hide is deferred until just before launch, not applied here
+        assert applied == []
         assert begun == [True]
     finally:
         window.close()
@@ -244,12 +247,15 @@ def test_launch_choice_dismissed_minimizes_without_saving(needs_display, fake_ho
     try:
         applied = []
         begun = []
-        monkeypatch.setattr(winmod, "hide_to_tray", lambda _w: applied.append("tray"))
+        monkeypatch.setattr(window, "_hide_to_tray", lambda: applied.append("tray"))
         monkeypatch.setattr(winmod, "minimize_to_taskbar", lambda _w: applied.append("taskbar"))
         monkeypatch.setattr(window, "_begin_launch", lambda: begun.append(True))
         window._on_launch_choice(_FakeDialog(), "dismissed")
         assert load()["minimize_on_launch"] is None
-        assert applied == ["taskbar"]
+        assert window._launch_hide == "taskbar"
+        assert window._hidden_for_launch is True
+        # hide is deferred until just before launch, not applied here
+        assert applied == []
         assert begun == [True]
     finally:
         window.close()
@@ -527,3 +533,56 @@ def test_edit_dialog_storage_tab_only_for_existing_project(needs_display, fake_h
         assert new._stack is None
     finally:
         new.close()
+
+
+def test_apply_launch_behavior_defers_hide(needs_display, fake_home, monkeypatch):
+    from eglantine_launcher.ui.window import LauncherWindow
+
+    app = _make_app()
+    window = LauncherWindow(app)
+    try:
+        hidden = []
+        monkeypatch.setattr(window, "_hide_to_tray", lambda: hidden.append(True))
+        window.cfg["minimize_on_launch"] = "tray"
+        window._apply_launch_behavior()
+        assert window._hidden_for_launch is True
+        assert window._launch_hide == "tray"
+        assert hidden == []
+        window.cfg["minimize_on_launch"] = "none"
+        window._apply_launch_behavior()
+        assert window._hidden_for_launch is False
+        assert window._launch_hide == "none"
+        assert hidden == []
+    finally:
+        window.close()
+
+
+def test_launch_now_hides_just_before_launch(needs_display, fake_home, monkeypatch):
+    from gi.repository import GLib
+
+    import eglantine_launcher.ui.window as winmod
+    from eglantine_launcher.ui.window import LauncherWindow
+
+    app = _make_app()
+    window = LauncherWindow(app)
+    try:
+        scheduled = []
+        monkeypatch.setattr(GLib, "idle_add", lambda fn, *a: scheduled.append((fn, a)) or 0)
+        launched_with = []
+        monkeypatch.setattr(winmod, "launch", lambda path: launched_with.append(path) or "proc")
+        finished_with = []
+        monkeypatch.setattr(window, "_launched", lambda proc: finished_with.append(proc) or True)
+
+        window._launch_hide = "tray"
+        assert window._launch_now("/tmp/eglantine") is True
+        assert launched_with == ["/tmp/eglantine"]
+        assert finished_with == ["proc"]
+        assert len(scheduled) == 1
+        assert getattr(scheduled[0][0], "__name__", "") == "_hide_to_tray"
+
+        scheduled.clear()
+        window._launch_hide = "none"
+        assert window._launch_now("/tmp/eglantine") is True
+        assert scheduled == []
+    finally:
+        window.close()

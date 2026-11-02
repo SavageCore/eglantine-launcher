@@ -65,6 +65,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         self._updating = False
         self._force_quit = False
         self._hidden_for_launch = False
+        self._launch_hide = "none"
         self._tray_icon = None
         self.connect("close-request", self._on_close_request)
         self.connect("destroy", self._on_destroy)
@@ -528,20 +529,27 @@ class LauncherWindow(Adw.ApplicationWindow):
             self._apply_launch_behavior()
         else:
             # dismissed: minimize once without saving, but still launch
-            minimize_to_taskbar(self)
+            self._hidden_for_launch = True
+            self._launch_hide = "taskbar"
         self._begin_launch()
 
     def _apply_launch_behavior(self):
+        """Record the hide choice; the worker applies it just before launch.
+
+        Hiding here would bury long downloads/builds with their progress
+        invisible, so the window stays up until the binary is ready.
+        """
         behavior = self.cfg.get("minimize_on_launch")
         if behavior == "tray":
             self._hidden_for_launch = True
-            self._hide_to_tray()
+            self._launch_hide = "tray"
         elif behavior == "none":
             self._hidden_for_launch = False
+            self._launch_hide = "none"
         else:
             # "taskbar", or unset in --auto mode (minimize silently, don't prompt)
             self._hidden_for_launch = True
-            minimize_to_taskbar(self)
+            self._launch_hide = "taskbar"
 
     def _begin_launch(self):
         info = self._current_info()
@@ -709,6 +717,15 @@ class LauncherWindow(Adw.ApplicationWindow):
         done.wait(timeout=300)
         return choice["v"] == "download"
 
+    def _launch_now(self, path):
+        """Hide per the launch choice, then launch. Runs on the worker thread."""
+        hide = getattr(self, "_launch_hide", "none")
+        if hide == "tray":
+            GLib.idle_add(self._hide_to_tray)
+        elif hide == "taskbar":
+            GLib.idle_add(minimize_to_taskbar, self)
+        return self._launched(launch(path))
+
     def _launched(self, proc):
         """Wait for the emulator to exit, then restore the window if we hid it.
 
@@ -748,7 +765,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                     status_cb=self._set_status,
                     tag=tag,
                 )
-                launched = self._launched(launch(appimage))
+                launched = self._launch_now(appimage)
             else:
                 if not self.cfg.get("source_enabled", True):
                     self._set_status("Source builds are hidden (Settings).")
@@ -772,7 +789,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                         log_cb=self._append_log,
                         commit=resolved,
                     )
-                    launched = self._launched(launch(binary))
+                    launched = self._launch_now(binary)
                     return
                 tag = find_release_for_commit(self.cfg, resolved) if resolved else None
                 if tag:
@@ -783,7 +800,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                             status_cb=self._set_status,
                             tag=tag,
                         )
-                        launched = self._launched(launch(appimage))
+                        launched = self._launch_now(appimage)
                         return
                 binary = build_source(
                     self.cfg,
@@ -791,7 +808,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                     log_cb=self._append_log,
                     commit=resolved,
                 )
-                launched = self._launched(launch(binary))
+                launched = self._launch_now(binary)
         except Exception as e:
             self._set_status(f"Error: {e}", sticky=True)
         finally:
