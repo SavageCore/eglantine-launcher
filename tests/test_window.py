@@ -535,6 +535,45 @@ def test_edit_dialog_storage_tab_only_for_existing_project(needs_display, fake_h
         new.close()
 
 
+def test_storage_tab_refresh_replaces_rows(needs_display, fake_home):
+    from eglantine_launcher.ui.settings_window import ProjectEditDialog
+
+    cfg = {"projects": []}
+    proj = {"id": "eglantine", "name": "Eglantine", "source_url": "https://github.com/o/r.git"}
+    dialog = ProjectEditDialog(None, proj, lambda *a: None, cfg=cfg)
+    try:
+        rows = [
+            {
+                "kind": "release",
+                "pid": "eglantine",
+                "label": "Release download (build-9)",
+                "detail": "/tmp/x.AppImage",
+                "size": 100,
+                "path": "/tmp/x.AppImage",
+                "in_use": True,
+            },
+        ]
+        dialog._render_storage(rows, "")
+        dialog._render_storage(rows, "")
+        assert len(dialog._storage_rows) == 1
+
+        def count_action_rows(widget):
+            n = 0
+            child = widget.get_first_child()
+            while child is not None:
+                n += count_action_rows(child)
+                child = child.get_next_sibling()
+            from gi.repository import Adw
+
+            if isinstance(widget, Adw.ActionRow):
+                n += 1
+            return n
+
+        assert count_action_rows(dialog._storage_group) == 1
+    finally:
+        dialog.close()
+
+
 def test_apply_launch_behavior_defers_hide(needs_display, fake_home, monkeypatch):
     from eglantine_launcher.ui.window import LauncherWindow
 

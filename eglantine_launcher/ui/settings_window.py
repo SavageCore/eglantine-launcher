@@ -222,18 +222,18 @@ class ProjectEditDialog(Adw.Window):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    @staticmethod
-    def _clear_group(group):
-        child = group.get_first_child()
-        while child is not None:
-            nxt = child.get_next_sibling()
-            group.remove(child)
-            child = nxt
-
     def _render_storage(self, rows, err=""):
         if getattr(self, "_storage_group", None) is None:
             return False
-        self._clear_group(self._storage_group)
+        # AdwPreferencesGroup keeps rows in an internal list box, so the
+        # group's direct children are not the rows: track what was added
+        # and remove exactly those, otherwise refreshes duplicate rows.
+        for widget in getattr(self, "_storage_rows", []):
+            try:
+                self._storage_group.remove(widget)
+            except Exception:
+                pass
+        self._storage_rows = []
         if err:
             self._storage_status.set_label(f"Could not read storage: {err}")
         elif not rows:
@@ -246,7 +246,9 @@ class ProjectEditDialog(Adw.Window):
                 + ". Deleted data is re-downloaded or re-cloned on next launch."
             )
             for row in rows:
-                self._storage_group.add(self._storage_row(row))
+                widget = self._storage_row(row)
+                self._storage_rows.append(widget)
+                self._storage_group.add(widget)
         return False
 
     def _storage_row(self, row):
