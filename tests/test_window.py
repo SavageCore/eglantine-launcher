@@ -649,13 +649,14 @@ def test_launch_now_hides_just_before_launch(needs_display, fake_home, monkeypat
         assert window._launch_now("/tmp/eglantine") is True
         assert launched_with == ["/tmp/eglantine"]
         assert finished_with == ["proc"]
-        assert len(scheduled) == 2
-        assert getattr(scheduled[1][0], "__name__", "") == "_hide_to_tray"
+        assert len(scheduled) == 3
+        assert getattr(scheduled[1][0], "__name__", "") == "_dismiss_toasts"
+        assert getattr(scheduled[2][0], "__name__", "") == "_hide_to_tray"
 
         scheduled.clear()
         window._launch_hide = "none"
         assert window._launch_now("/tmp/eglantine") is True
-        assert len(scheduled) == 1
+        assert len(scheduled) == 2
     finally:
         window.close()
 

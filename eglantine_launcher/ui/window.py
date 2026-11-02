@@ -260,11 +260,20 @@ class LauncherWindow(Adw.ApplicationWindow):
 
             def _toast():
                 toast = Adw.Toast.new(text)
-                toast.set_timeout(8)
+                toast.set_timeout(4)
                 self.toast_overlay.add_toast(toast)
 
             GLib.idle_add(_toast)
-            GLib.timeout_add_seconds(8, lambda: self._clear_status(seq))
+            GLib.timeout_add_seconds(4, lambda: self._clear_status(seq))
+
+    def _dismiss_toasts(self):
+        # Successful launch leaves no stale toasts behind (e.g. "Fetching
+        # source updates..." / "Source already up to date." from the
+        # already-built fast path). Bumping the seq also invalidates pending
+        # _clear_status timeouts so they can't hide a later banner.
+        self._status_seq = getattr(self, "_status_seq", 0) + 1
+        self.toast_overlay.dismiss_all()
+        return False
 
     def _hide_banner_if_seq(self, seq):
         if getattr(self, "_status_seq", 0) == seq:
@@ -822,6 +831,7 @@ class LauncherWindow(Adw.ApplicationWindow):
     def _launch_now(self, path):
         """Hide per the launch choice, then launch. Runs on the worker thread."""
         self._hide_stop()
+        GLib.idle_add(self._dismiss_toasts)
         hide = getattr(self, "_launch_hide", "none")
         if hide == "tray":
             GLib.idle_add(self._hide_to_tray)
