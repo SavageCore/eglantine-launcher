@@ -86,7 +86,9 @@ def default_config():
         "minimize_on_launch": None,
         "close_behavior": None,
         # Main window size; updated whenever the window closes or hides.
-        # Matches the documented screenshots (640x600).
+        # Matches the documented screenshots (630x590: the 1px
+        # backdrop frame plus the 4px theme CSD frame are cropped
+        # in scripts/shot_alpha.py).
         "window_width": 640,
         "window_height": 600,
         # The "Running in the background" notification only shows once.
