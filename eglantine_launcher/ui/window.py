@@ -59,6 +59,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         self._busy = False
         self._release_tags = []
         self._commit_shas = []
+        self._latest_commit = None
         self._version_subs = []
         self._launcher_update_url = None
         self._updating = False
@@ -287,7 +288,15 @@ class LauncherWindow(Adw.ApplicationWindow):
         return factory
 
     def _set_version_model(
-        self, labels, tags, shas, subs=None, project_id=None, is_release=None, seen_shas=None
+        self,
+        labels,
+        tags,
+        shas,
+        subs=None,
+        project_id=None,
+        is_release=None,
+        seen_shas=None,
+        latest_commit=None,
     ):
         self._updating = True
         try:
@@ -298,6 +307,14 @@ class LauncherWindow(Adw.ApplicationWindow):
             self._release_tags = tags or []
             self._commit_shas = shas or []
             self._version_subs = subs or []
+            if bool(is_release):
+                self._latest_commit = None
+            elif latest_commit is not None:
+                self._latest_commit = latest_commit
+            elif shas:
+                self._latest_commit = shas[0]
+            else:
+                self._latest_commit = None
             if project_id:
                 seen = seen_shas if seen_shas is not None else (shas or [])
                 self._record_seen(project_id, bool(is_release), tags or [], seen)
@@ -443,6 +460,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                         cfg.get("project"),
                         False,
                         [latest] if latest else [],
+                        latest,
                     )
                 except Exception:
                     GLib.idle_add(self._set_version_model, ["Latest"], [], [])
@@ -745,13 +763,14 @@ class LauncherWindow(Adw.ApplicationWindow):
                     return
                 idx = self.version_drop.get_selected()
                 commit = self._commit_shas[idx - 1] if idx > 0 and idx - 1 < len(self._commit_shas) else None
-                resolved = commit or (self._commit_shas[0] if self._commit_shas else None)
+                latest = getattr(self, "_latest_commit", None)
+                resolved = commit or latest or (self._commit_shas[0] if self._commit_shas else None)
                 if resolved and self._already_built(resolved):
                     binary = build_source(
                         self.cfg,
                         status_cb=self._set_status,
                         log_cb=self._append_log,
-                        commit=commit,
+                        commit=resolved,
                     )
                     launched = self._launched(launch(binary))
                     return
@@ -770,7 +789,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                     self.cfg,
                     status_cb=self._set_status,
                     log_cb=self._append_log,
-                    commit=commit,
+                    commit=resolved,
                 )
                 launched = self._launched(launch(binary))
         except Exception as e:

@@ -382,9 +382,10 @@ def source_version_entries(commits, have=None, installed_sha=None, installed_pre
     """Build (labels, shas, subs, latest_sha) for the source version list.
 
     The installed commit gets a ticked row even when it has scrolled out
-    of the fetched window, so the current build is always marked.
-    latest_sha is the newest upstream commit (before the installed row),
-    for the "Latest" tick and update tracking.
+    of the fetched window, so the current build is always marked. It is
+    appended at the end so shas[0] stays the newest upstream commit.
+    latest_sha is the newest upstream commit, for the "Latest" tick and
+    update tracking (falls back to the installed build when offline).
     """
     have = set(have or [])
     labels, shas, subs = [], [], []
@@ -405,9 +406,11 @@ def source_version_entries(commits, have=None, installed_sha=None, installed_pre
         subs.append(f"{sha}\n{msg.strip()}" if msg else sha)
     latest_sha = shas[0] if shas else None
     if installed_sha and installed_sha not in shas and installed_present:
-        shas.insert(0, installed_sha)
-        labels.insert(0, f"✓ {installed_sha[:7]} (installed build)")
-        subs.insert(0, f"{installed_sha}\nCurrently installed build")
+        shas.append(installed_sha)
+        labels.append(f"✓ {installed_sha[:7]} (installed build)")
+        subs.append(f"{installed_sha}\nCurrently installed build")
+        if latest_sha is None:
+            latest_sha = installed_sha
     return labels, shas, subs, latest_sha
 
 

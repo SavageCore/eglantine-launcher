@@ -727,7 +727,7 @@ def test_source_version_entries_forgejo_id_and_skips():
     assert latest == "abc123"
 
 
-def test_source_version_entries_prepends_installed():
+def test_source_version_entries_appends_installed():
     from eglantine_launcher.tasks import source_version_entries
 
     commits = [{"sha": "new111", "commit": {"message": "upstream moved on"}}]
@@ -735,13 +735,25 @@ def test_source_version_entries_prepends_installed():
         commits, {"new111"}, installed_sha="old999", installed_present=True
     )
     assert latest == "new111"
-    assert shas == ["old999", "new111"]
-    assert labels[0] == "✓ old999 (installed build)"
-    assert labels[1] == "✓ new111 upstream moved on"
-    assert subs[0].startswith("old999\n")
+    assert shas == ["new111", "old999"]
+    assert labels[0] == "✓ new111 upstream moved on"
+    assert labels[1] == "✓ old999 (installed build)"
+    assert subs[1].startswith("old999\n")
 
 
-def test_source_version_entries_no_prepend_when_visible_or_missing():
+def test_source_version_entries_latest_survives_rewritten_history():
+    from eglantine_launcher.tasks import source_version_entries
+
+    commits = [{"sha": "a407703f", "commit": {"message": "newest upstream"}}]
+    labels, shas, subs, latest = source_version_entries(
+        commits, set(), installed_sha="be71c425", installed_present=True
+    )
+    assert latest == "a407703f"
+    assert shas[0] == "a407703f"
+    assert shas[-1] == "be71c425"
+
+
+def test_source_version_entries_no_append_when_visible_or_missing():
     from eglantine_launcher.tasks import source_version_entries
 
     commits = [{"sha": "aaa", "commit": {"message": "m"}}]
@@ -751,3 +763,5 @@ def test_source_version_entries_no_prepend_when_visible_or_missing():
     assert shas == ["aaa"]
     _, shas, _, latest = source_version_entries([], set(), None, False)
     assert shas == [] and latest is None
+    _, shas, _, latest = source_version_entries([], set(), "zzz", True)
+    assert shas == ["zzz"] and latest == "zzz"
