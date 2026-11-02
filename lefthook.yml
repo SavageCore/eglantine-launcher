@@ -2,15 +2,15 @@ pre-commit:
   parallel: true
   commands:
     ruff-check:
-      glob: "*.py"
-      run: ruff check {staged_files}
+      # Whole tree, like CI (staged-only globs drift from `ruff check .`).
+      run: ruff check .
     ruff-format:
-      glob: "*.py"
-      run: ruff format --check {staged_files}
+      run: ruff format --check .
     pytest:
-      run: pytest -q
-      # Belt and braces: even if a test forgets the fake_home fixture,
-      # the suite can never touch the developer's real config.
+      # Same as CI: xvfb-run so GUI tests run instead of skipping
+      # via needs_display. Belt and braces: the suite can never touch
+      # the developer's real config.
+      run: xvfb-run -a pytest -q
       env:
         XDG_CONFIG_HOME: /tmp/eglantine-launcher-test-config
 

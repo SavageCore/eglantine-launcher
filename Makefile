@@ -12,10 +12,10 @@ format: ## Auto-format code with ruff
 check: ## Lint, format-check and test (what CI runs)
 	ruff check .
 	ruff format --check .
-	pytest -q
+	xvfb-run -a pytest -q
 
 test: ## Run the test suite
-	pytest -q
+	xvfb-run -a pytest -q
 
 screenshot: screenshots ## Take light + dark screenshots
 
