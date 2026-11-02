@@ -36,6 +36,39 @@ def test_main_window_has_content(needs_display, fake_home):
         window.close()
 
 
+def test_stop_button_hidden_initially_and_destructive(needs_display, fake_home):
+    window = LauncherWindow(_make_app())
+    try:
+        assert window.stop_btn.get_visible() is False
+        assert window.stop_btn.get_label() == "Stop"
+        assert "destructive-action" in window.stop_btn.get_css_classes()
+        assert window.has_action("shortcut")
+        assert window.has_action("folder")
+    finally:
+        window.close()
+
+
+def test_confirm_stop_sets_event_and_kills_proc(needs_display, fake_home):
+    window = LauncherWindow(_make_app())
+    try:
+        window._busy = True
+        killed = []
+
+        class Proc:
+            def poll(self):
+                return None
+
+            def terminate(self):
+                killed.append(True)
+
+        window._set_build_proc(Proc())
+        window._confirm_stop()
+        assert window._cancel_event.is_set()
+        assert killed == [True]
+    finally:
+        window.close()
+
+
 def test_main_window_mode_row_reflects_source_flag(needs_display, fake_home):
     from eglantine_launcher.config import load, save
 
@@ -616,13 +649,13 @@ def test_launch_now_hides_just_before_launch(needs_display, fake_home, monkeypat
         assert window._launch_now("/tmp/eglantine") is True
         assert launched_with == ["/tmp/eglantine"]
         assert finished_with == ["proc"]
-        assert len(scheduled) == 1
-        assert getattr(scheduled[0][0], "__name__", "") == "_hide_to_tray"
+        assert len(scheduled) == 2
+        assert getattr(scheduled[1][0], "__name__", "") == "_hide_to_tray"
 
         scheduled.clear()
         window._launch_hide = "none"
         assert window._launch_now("/tmp/eglantine") is True
-        assert scheduled == []
+        assert len(scheduled) == 1
     finally:
         window.close()
 

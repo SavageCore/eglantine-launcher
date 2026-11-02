@@ -12,6 +12,7 @@ from .. import __version__
 from ..config import load as load_config
 from ..config import save as save_config
 from ..tasks import (
+    BuildCancelled,
     _in_flatpak,
     _on_host,
     build_source,
@@ -67,22 +68,30 @@ class LauncherWindow(Adw.ApplicationWindow):
         self._hidden_for_launch = False
         self._launch_hide = "none"
         self._tray_icon = None
+        self._cancel_event = threading.Event()
+        self._build_proc = None
+        self._build_proc_lock = threading.Lock()
         self.connect("close-request", self._on_close_request)
         self.connect("destroy", self._on_destroy)
 
         toolbar = Adw.HeaderBar()
-        menu = Gio.Menu()
-        menu.append("Settings", "win.settings")
-        menu.append("About", "win.about")
-        menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic")
-        menu_button.set_menu_model(menu)
-        toolbar.pack_end(menu_button)
+        self._menu = Gio.Menu()
+        self._menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic")
+        self._menu_button.set_menu_model(self._menu)
+        toolbar.pack_end(self._menu_button)
         settings_action = Gio.SimpleAction.new("settings", None)
         settings_action.connect("activate", self.on_settings)
         self.add_action(settings_action)
         about_action = Gio.SimpleAction.new("about", None)
         about_action.connect("activate", self.on_about)
         self.add_action(about_action)
+        shortcut_action = Gio.SimpleAction.new("shortcut", None)
+        shortcut_action.connect("activate", self.on_install_shortcut)
+        self.add_action(shortcut_action)
+        folder_action = Gio.SimpleAction.new("folder", None)
+        folder_action.connect("activate", self.on_open_folder)
+        self.add_action(folder_action)
+        self._build_menu("Install Shortcut")
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         box.set_margin_top(12)
@@ -172,13 +181,11 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.launch_btn.connect("clicked", self.on_launch)
         btn_box.append(self.launch_btn)
 
-        self.shortcut_btn = Gtk.Button(label="Install Shortcut")
-        self.shortcut_btn.connect("clicked", self.on_install_shortcut)
-        btn_box.append(self.shortcut_btn)
-
-        self.folder_btn = Gtk.Button(label="Open Data Folder")
-        self.folder_btn.connect("clicked", self.on_open_folder)
-        btn_box.append(self.folder_btn)
+        self.stop_btn = Gtk.Button(label="Stop")
+        self.stop_btn.add_css_class("destructive-action")
+        self.stop_btn.connect("clicked", self.on_stop_clicked)
+        self.stop_btn.set_visible(False)
+        btn_box.append(self.stop_btn)
 
         self.self_update_btn = Gtk.Button(label="Update Launcher")
         self.self_update_btn.connect("clicked", self.on_self_update)
@@ -244,6 +251,57 @@ class LauncherWindow(Adw.ApplicationWindow):
         display = self.get_display()
         if display:
             display.get_clipboard().set(text)
+
+    def _build_menu(self, shortcut_label):
+        menu = Gio.Menu()
+        menu.append("Settings", "win.settings")
+        menu.append(shortcut_label, "win.shortcut")
+        menu.append("Open Data Folder", "win.folder")
+        menu.append("About", "win.about")
+        self._menu = menu
+        self._menu_button.set_menu_model(menu)
+
+    def _set_build_proc(self, proc):
+        with self._build_proc_lock:
+            self._build_proc = proc
+
+    def _hide_stop(self):
+        GLib.idle_add(self.stop_btn.set_visible, False)
+
+    def on_stop_clicked(self, *_args):
+        if not self._busy:
+            return
+        dialog = Adw.MessageDialog.new(
+            self,
+            "Stop build?",
+            "Abort the current source build? Partial build files are kept, "
+            "so you can resume by launching again.",
+        )
+        dialog.add_response("keep", "Keep building")
+        dialog.add_response("stop", "Stop build")
+        dialog.set_response_appearance("stop", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("keep")
+        dialog.set_close_response("keep")
+        dialog.connect("response", self._on_stop_response)
+        dialog.present()
+
+    def _on_stop_response(self, dialog, resp):
+        dialog.close()
+        if resp == "stop":
+            self._confirm_stop()
+
+    def _confirm_stop(self):
+        self._cancel_event.set()
+        self._set_status("Cancelling...", sticky=True)
+        GLib.idle_add(self.stop_btn.set_sensitive, False)
+        with self._build_proc_lock:
+            proc = self._build_proc
+        if proc is not None:
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+            except Exception:
+                pass
 
     def _append_log(self, line):
         def _do():
@@ -660,12 +718,17 @@ class LauncherWindow(Adw.ApplicationWindow):
 
     def _start_worker(self):
         self._set_busy(True)
+        self._cancel_event.clear()
+        self._set_build_proc(None)
         self.progress.set_fraction(0.0)
         self._last_fraction_time = 0.0
         # clear log
         self.log_view.get_buffer().set_text("")
         GLib.idle_add(self.log_scrolled.set_visible, False)
         GLib.idle_add(self.copy_btn.set_visible, False)
+        is_source = getattr(self, "_launch_mode", self.cfg.get("mode", "release")) != "release"
+        GLib.idle_add(self.stop_btn.set_visible, is_source)
+        GLib.idle_add(self.stop_btn.set_sensitive, True)
         GLib.timeout_add(100, self._pulse_tick)
         thread = threading.Thread(target=self._worker, daemon=True)
         thread.start()
@@ -723,6 +786,7 @@ class LauncherWindow(Adw.ApplicationWindow):
 
     def _launch_now(self, path):
         """Hide per the launch choice, then launch. Runs on the worker thread."""
+        self._hide_stop()
         hide = getattr(self, "_launch_hide", "none")
         if hide == "tray":
             GLib.idle_add(self._hide_to_tray)
@@ -797,6 +861,8 @@ class LauncherWindow(Adw.ApplicationWindow):
                         status_cb=self._set_status,
                         log_cb=self._append_log,
                         commit=resolved,
+                        cancelled=self._cancel_event.is_set,
+                        on_proc=self._set_build_proc,
                     )
                     launched = self._launch_now(binary)
                     return
@@ -816,11 +882,18 @@ class LauncherWindow(Adw.ApplicationWindow):
                     status_cb=self._set_status,
                     log_cb=self._append_log,
                     commit=resolved,
+                    cancelled=self._cancel_event.is_set,
+                    on_proc=self._set_build_proc,
                 )
                 launched = self._launch_now(binary)
+        except BuildCancelled:
+            self._append_log("Build cancelled.")
+            self._set_status("Build cancelled.", sticky=True)
         except Exception as e:
             self._set_status(f"Error: {e}", sticky=True)
         finally:
+            self._set_build_proc(None)
+            self._hide_stop()
             self._set_busy(False)
             GLib.idle_add(self.progress.set_fraction, 0.0)
             if not self.auto and launched:
@@ -836,9 +909,7 @@ class LauncherWindow(Adw.ApplicationWindow):
     def _refresh_shortcut_btn(self):
         info = self._current_info()
         pid = info.get("id", self.cfg.get("project"))
-        self.shortcut_btn.set_label(
-            "Remove Shortcut" if shortcut_path(self.cfg, pid).exists() else "Install Shortcut"
-        )
+        self._build_menu("Remove Shortcut" if shortcut_path(self.cfg, pid).exists() else "Install Shortcut")
 
     def on_install_shortcut(self, *_args):
         try:

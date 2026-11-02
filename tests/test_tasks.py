@@ -209,7 +209,9 @@ def test_build_source_uses_pgo_flags(monkeypatch, tmp_path, fake_home):
 
     src = tmp_path / "src"
     src.mkdir()
-    monkeypatch.setattr(tasks, "ensure_source", lambda cfg, status_cb=None, commit=None: (src, "abc123"))
+    monkeypatch.setattr(
+        tasks, "ensure_source", lambda cfg, status_cb=None, commit=None, **kw: (src, "abc123")
+    )
     monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: ("/opt/clang", "/opt/clang++"))
     monkeypatch.setattr(tasks, "_ensure_pgo_profile", lambda status_cb=None: Path("/tmp/eden.profdata"))
     monkeypatch.setattr(tasks, "_profile_readable", lambda cxx, prof: True)
@@ -245,7 +247,9 @@ def test_build_source_skips_pgo_without_clang(monkeypatch, tmp_path, fake_home):
 
     src = tmp_path / "src"
     src.mkdir()
-    monkeypatch.setattr(tasks, "ensure_source", lambda cfg, status_cb=None, commit=None: (src, "abc123"))
+    monkeypatch.setattr(
+        tasks, "ensure_source", lambda cfg, status_cb=None, commit=None, **kw: (src, "abc123")
+    )
     monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: (None, None))
 
     seen = {}
@@ -265,6 +269,70 @@ def test_build_source_skips_pgo_without_clang(monkeypatch, tmp_path, fake_home):
     configure = seen["cmds"][0]
     assert not any("CMAKE_CXX_COMPILER" in a for a in configure)
     assert not any("fprofile-use" in a for a in configure)
+
+
+def test_build_source_cancelled_before_configure(monkeypatch, tmp_path, fake_home):
+    import pytest
+
+    import eglantine_launcher.tasks as tasks
+
+    src = tmp_path / "src"
+    src.mkdir()
+    monkeypatch.setattr(
+        tasks, "ensure_source", lambda cfg, status_cb=None, commit=None, **kw: (src, "abc123")
+    )
+    monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: (None, None))
+
+    def no_popen(cmd, **kwargs):
+        raise AssertionError("must not spawn a build process once cancelled")
+
+    monkeypatch.setattr(tasks, "_host_popen", no_popen)
+    cfg = {"project": "t", "pgo": False, "projects": [{"id": "t"}]}
+    with pytest.raises(tasks.BuildCancelled):
+        tasks.build_source(cfg, commit="abc123", cancelled=lambda: True)
+
+
+def test_build_source_cancelled_during_build(monkeypatch, tmp_path, fake_home):
+    import pytest
+
+    import eglantine_launcher.tasks as tasks
+
+    src = tmp_path / "src"
+    src.mkdir()
+    monkeypatch.setattr(
+        tasks, "ensure_source", lambda cfg, status_cb=None, commit=None, **kw: (src, "abc123")
+    )
+    monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: (None, None))
+
+    killed = []
+    spawned = {"n": 0}
+
+    class FakeProc:
+        def __init__(self, cmd, **kwargs):
+            spawned["n"] += 1
+            self.stdout = iter(["compiling..."])
+            self.returncode = 0
+
+        def terminate(self):
+            killed.append(True)
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            killed.append(True)
+
+    monkeypatch.setattr(tasks, "_host_popen", FakeProc)
+    cfg = {"project": "t", "pgo": False, "projects": [{"id": "t"}]}
+    calls = {"n": 0}
+
+    def cancelled():
+        calls["n"] += 1
+        return calls["n"] > 4  # let configure pass, cancel during the build step
+
+    with pytest.raises(tasks.BuildCancelled):
+        tasks.build_source(cfg, commit="abc123", cancelled=cancelled)
+    assert killed, "cancelled build must terminate the child process"
 
 
 def test_config_save_load_roundtrip_in_fake_home(fake_home):

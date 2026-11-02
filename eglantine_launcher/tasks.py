@@ -17,6 +17,10 @@ from .config import save as save_config
 _token_rejected = False
 
 
+class BuildCancelled(RuntimeError):
+    """Raised when a source build is stopped via the Stop button."""
+
+
 def _api_headers(cfg=None):
     headers = {"User-Agent": "eglantine-launcher"}
     if not _token_rejected:
@@ -877,7 +881,7 @@ def check_release(cfg, progress_cb=None, status_cb=None, tag=None):
     return appimage
 
 
-def ensure_source(cfg, status_cb=None, commit=None):
+def ensure_source(cfg, status_cb=None, commit=None, cancelled=None):
     info = project_info(cfg)
     src = source_dir(cfg)
     src.parent.mkdir(parents=True, exist_ok=True)
@@ -889,6 +893,8 @@ def ensure_source(cfg, status_cb=None, commit=None):
         if status_cb:
             status_cb("Fetching source updates...")
         _host_run(["git", "-C", str(src), "fetch", "origin", info["branch"]], check=True)
+    if cancelled and cancelled():
+        raise BuildCancelled("Build cancelled.")
     if commit:
         _host_run(["git", "-C", str(src), "checkout", commit], check=True)
     else:
@@ -969,8 +975,53 @@ def _profile_readable(cxx, profile):
         return False
 
 
-def build_source(cfg, status_cb=None, log_cb=None, commit=None):
-    src, commit = ensure_source(cfg, status_cb, commit=commit)
+def _kill_proc(proc):
+    try:
+        proc.terminate()
+    except Exception:
+        return
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _stream_proc(proc, log_cb=None, cancelled=None, on_proc=None):
+    """Stream proc stdout to log_cb; raise BuildCancelled when cancelled.
+
+    The Stop button also terminates the stored proc directly (for quiet
+    periods with no output), so this drains until EOF then checks the flag
+    before the caller inspects the return code.
+    """
+    if on_proc:
+        try:
+            on_proc(proc)
+        except Exception:
+            pass
+    try:
+        if proc.stdout is not None:
+            for line in proc.stdout:
+                if cancelled and cancelled():
+                    _kill_proc(proc)
+                    raise BuildCancelled("Build cancelled.")
+                if log_cb:
+                    log_cb(line.rstrip())
+        proc.wait()
+        if cancelled and cancelled():
+            raise BuildCancelled("Build cancelled.")
+    finally:
+        if on_proc:
+            try:
+                on_proc(None)
+            except Exception:
+                pass
+
+
+def build_source(cfg, status_cb=None, log_cb=None, commit=None, cancelled=None, on_proc=None):
+    src, commit = ensure_source(cfg, status_cb, commit=commit, cancelled=cancelled)
     binary_name = "eglantine.exe" if is_windows() else "eglantine"
     binary = src / "build" / "release" / "bin" / binary_name
     if cfg.get("last_source_commit") == commit and binary.exists():
@@ -1071,6 +1122,8 @@ def build_source(cfg, status_cb=None, log_cb=None, commit=None):
 
     if status_cb:
         status_cb("Configuring source build...")
+    if cancelled and cancelled():
+        raise BuildCancelled("Build cancelled.")
     cmake_cmd = ["cmake", "-S", str(src), "-B", str(build_dir), "-G", "Ninja", *flags]
     proc = _host_popen(
         cmake_cmd,
@@ -1078,14 +1131,13 @@ def build_source(cfg, status_cb=None, log_cb=None, commit=None):
         stderr=subprocess.STDOUT,
         text=True,
     )
-    if log_cb:
-        for line in proc.stdout:
-            log_cb(line.rstrip())
-    proc.wait()
+    _stream_proc(proc, log_cb=log_cb, cancelled=cancelled, on_proc=on_proc)
     if proc.returncode != 0:
         raise RuntimeError(f"Configure failed (exit {proc.returncode}); see log above.")
     if status_cb:
         status_cb("Building (this may take a while)...")
+    if cancelled and cancelled():
+        raise BuildCancelled("Build cancelled.")
     build_cmd = ["cmake", "--build", str(build_dir), "--target", "yuzu", "yuzu-cmd", "--parallel"]
     if build_jobs:
         build_cmd.append(str(build_jobs))
@@ -1095,11 +1147,10 @@ def build_source(cfg, status_cb=None, log_cb=None, commit=None):
         stderr=subprocess.STDOUT,
         text=True,
     )
-    if log_cb:
-        for line in proc.stdout:
-            log_cb(line.rstrip())
-    proc.wait()
+    _stream_proc(proc, log_cb=log_cb, cancelled=cancelled, on_proc=on_proc)
     if proc.returncode != 0:
+        if cancelled and cancelled():
+            raise BuildCancelled("Build cancelled.")
         raise RuntimeError("Build failed")
     cfg["last_source_commit"] = commit
     _record(cfg, "built_commits", commit)
