@@ -205,16 +205,21 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.pgo_row.connect("notify::active", lambda *_: self._save_choices())
 
         # add header bar via toolbar view
-        status_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        status_bar.set_margin_top(4)
-        status_bar.set_margin_bottom(4)
-        status_bar.set_margin_start(12)
-        status_bar.set_margin_end(12)
-        status_bar.append(self.status_label)
+        # The status bar collapses when empty so it never leaves dead
+        # space below the Launch row; it appears only while a status
+        # message is shown.
+        self.status_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.status_bar.set_margin_top(4)
+        self.status_bar.set_margin_bottom(4)
+        self.status_bar.set_margin_start(12)
+        self.status_bar.set_margin_end(12)
+        self.status_bar.append(self.status_label)
+        self.status_bar.set_visible(False)
+        self.status_label.connect("notify::label", self._on_status_label_changed)
         toolbar_view = Adw.ToolbarView()
         toolbar_view.add_top_bar(toolbar)
         toolbar_view.set_content(box)
-        toolbar_view.add_bottom_bar(status_bar)
+        toolbar_view.add_bottom_bar(self.status_bar)
         self.set_content(toolbar_view)
 
         if auto:
@@ -236,6 +241,9 @@ class LauncherWindow(Adw.ApplicationWindow):
                 GLib.idle_add(self.reload_projects)
         except Exception:
             pass
+
+    def _on_status_label_changed(self, label, _pspec):
+        self.status_bar.set_visible(bool(label.get_text()))
 
     def _set_status(self, text, sticky=False):
         self._status_seq = getattr(self, "_status_seq", 0) + 1
