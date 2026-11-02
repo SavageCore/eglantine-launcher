@@ -86,9 +86,9 @@ def default_config():
         "minimize_on_launch": None,
         "close_behavior": None,
         # Main window size; updated whenever the window closes or hides.
-        # Height None means hug content (the original default).
+        # Matches the documented screenshots (640x600).
         "window_width": 640,
-        "window_height": None,
+        "window_height": 600,
         # The "Running in the background" notification only shows once.
         "tray_notice_shown": False,
         "projects": [p.copy() for p in DEFAULT_PROJECTS],

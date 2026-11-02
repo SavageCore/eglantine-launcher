@@ -58,9 +58,9 @@ class LauncherWindow(Adw.ApplicationWindow):
         try:
             win_w = int(self.cfg.get("window_width") or 640)
             win_h = self.cfg.get("window_height")
-            win_h = int(win_h) if win_h else -1
+            win_h = int(win_h) if win_h else 600
         except (TypeError, ValueError):
-            win_w, win_h = 640, -1
+            win_w, win_h = 640, 600
         self.set_default_size(win_w, win_h)
         self.auto = auto
         self._busy = False
