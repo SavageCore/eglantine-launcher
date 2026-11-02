@@ -158,6 +158,9 @@ def _show(on_show, on_quit, icon_path):
         None,
     )
     if not has_owner[0]:
+        import sys
+
+        print("statusicon: no watcher owner", file=sys.stderr)
         return None
     service = f"org.kde.StatusNotifierItem-{os.getpid()}-eglantine"
     owned = bus.call_sync(
@@ -172,6 +175,9 @@ def _show(on_show, on_quit, icon_path):
         None,
     )
     if owned[0] != 1:
+        import sys
+
+        print(f"statusicon: RequestName got {owned[0]}", file=sys.stderr)
         return None
     handle = TrayHandle(bus, service)
 
@@ -340,6 +346,9 @@ def _show(on_show, on_quit, icon_path):
             None,
         )
     except Exception:
+        import traceback
+
+        traceback.print_exc()
         handle.close()
         return None
     return handle
