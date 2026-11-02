@@ -108,8 +108,10 @@ def test_settings_window_builds(needs_display, fake_home):
     _app = _make_app()
     window = SettingsWindow(None)
     try:
-        assert window.list_box is not None
+        assert window.sources_group is not None
         assert window.source_row is not None
+        # default config ships two sources; both rows must render
+        assert len(window._source_rows) == 2
     finally:
         window.close()
 
@@ -480,9 +482,9 @@ def test_source_row_click_opens_edit(needs_display, fake_home, monkeypatch):
     try:
         opened = []
         monkeypatch.setattr(window, "_edit_project", lambda proj: opened.append(proj))
-        row = window.list_box.get_row_at_index(0)
+        row = window._source_rows[0]
         assert row is not None
-        window._on_row_activated(window.list_box, row)
+        window._on_row_activated(row)
         assert opened == [row.project]
     finally:
         window.close()

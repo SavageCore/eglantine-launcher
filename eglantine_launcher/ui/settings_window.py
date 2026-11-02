@@ -371,16 +371,16 @@ class ProjectEditDialog(Adw.Window):
 class SettingsWindow(Adw.Window):
     def __init__(self, parent, on_changed=None):
         super().__init__(transient_for=parent, modal=True, title="Settings")
-        self.set_default_size(620, 720)
+        self.set_default_size(620, 780)
         self.on_changed = on_changed
         self.cfg = load_config()
 
         toolbar = Adw.HeaderBar()
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        box.set_margin_top(12)
-        box.set_margin_bottom(12)
-        box.set_margin_start(12)
-        box.set_margin_end(12)
+        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        content_box.set_margin_top(12)
+        content_box.set_margin_bottom(12)
+        content_box.set_margin_start(12)
+        content_box.set_margin_end(12)
 
         self._api_base_desc = (
             "Optional. Without a token, GitHub allows ~60 requests/hour "
@@ -401,9 +401,9 @@ class SettingsWindow(Adw.Window):
         self._token_status_label.set_wrap(True)
         self._token_status_label.set_xalign(0)
         self._token_status_label.set_visible(False)
-        box.append(self._token_status_label)
+        content_box.append(self._token_status_label)
         self._token_status_seq = 0
-        box.append(self.api_group)
+        content_box.append(self.api_group)
 
         token_link = Gtk.LinkButton.new_with_label(
             "https://github.com/settings/personal-access-tokens/new"
@@ -413,7 +413,7 @@ class SettingsWindow(Adw.Window):
             "Create a token (no permissions needed - public data only)",
         )
         token_link.set_halign(Gtk.Align.START)
-        box.append(token_link)
+        content_box.append(token_link)
 
         build_group = Adw.PreferencesGroup(title="Source builds")
         self.source_row = Adw.SwitchRow(title="Allow building from source")
@@ -421,7 +421,7 @@ class SettingsWindow(Adw.Window):
         self.source_row.set_active(self.cfg.get("source_enabled", True))
         self.source_row.connect("notify::active", self._on_source_toggle)
         build_group.add(self.source_row)
-        box.append(build_group)
+        content_box.append(build_group)
 
         window_group = Adw.PreferencesGroup(title="Window")
         self._launch_values = [None, *[v for v, _label in LAUNCH_CHOICES]]
@@ -440,7 +440,7 @@ class SettingsWindow(Adw.Window):
         self.close_behavior_row.set_selected(self._close_index(self.cfg.get("close_behavior")))
         self.close_behavior_row.connect("notify::selected", self._on_close_behavior_changed)
         window_group.add(self.close_behavior_row)
-        box.append(window_group)
+        content_box.append(window_group)
 
         src_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         src_header.set_valign(Gtk.Align.CENTER)
@@ -453,27 +453,33 @@ class SettingsWindow(Adw.Window):
         add_btn.add_css_class("suggested-action")
         add_btn.connect("clicked", self._add)
         src_header.append(add_btn)
-        box.append(src_header)
+        content_box.append(src_header)
 
-        self.list_box = Gtk.ListBox()
-        self.list_box.set_selection_mode(Gtk.SelectionMode.SINGLE)
-        self.list_box.add_css_class("boxed-list")
-        self.list_box.connect("row-activated", self._on_row_activated)
+        self.sources_group = Adw.PreferencesGroup()
+        self._source_rows = []
+        content_box.append(self.sources_group)
 
         scrolled = Gtk.ScrolledWindow()
-        scrolled.set_child(self.list_box)
+        scrolled.set_child(content_box)
         scrolled.set_vexpand(True)
-        scrolled.set_min_content_height(240)
-        box.append(scrolled)
+        scrolled.set_hexpand(True)
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+
+        list_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        list_page.append(scrolled)
 
         close_btn = Gtk.Button(label="Close")
         close_btn.connect("clicked", lambda *_: self.close())
-        box.append(close_btn)
+        close_btn.set_margin_top(12)
+        close_btn.set_margin_bottom(12)
+        close_btn.set_margin_start(12)
+        close_btn.set_margin_end(12)
+        list_page.append(close_btn)
         # don't leave the token field focused on open
         self.connect("map", lambda *_: close_btn.grab_focus())
 
         self.stack = Gtk.Stack()
-        self.stack.add_named(box, "list")
+        self.stack.add_named(list_page, "list")
         self.add_page = AddSourcePage(self._on_repo_next, cfg=self.cfg)
         self.stack.add_named(self.add_page, "add")
 
@@ -634,14 +640,16 @@ class SettingsWindow(Adw.Window):
             self._set_token_status(f"Could not verify ({reason}); saved anyway.", "warning")
 
     def _refresh(self):
-        while True:
-            row = self.list_box.get_row_at_index(0)
-            if row is None:
-                break
-            self.list_box.remove(row)
+        for row in getattr(self, "_source_rows", []):
+            try:
+                self.sources_group.remove(row)
+            except Exception:
+                pass
+        self._source_rows = []
         for p in self.cfg.get("projects", []):
             row = Adw.ActionRow(title=p.get("name", p.get("id", "")), subtitle=p.get("source_url", ""))
             row.set_activatable(True)
+            row.connect("activated", self._on_row_activated)
             url = p.get("source_url", "")
             globe = Path(__file__).resolve().parents[1] / "icons" / "globe-symbolic.svg"
             if globe.exists():
@@ -662,7 +670,8 @@ class SettingsWindow(Adw.Window):
             del_btn.connect("clicked", self._on_delete_clicked, p)
             row.add_suffix(del_btn)
             row.project = p
-            self.list_box.append(row)
+            self._source_rows.append(row)
+            self.sources_group.add(row)
 
     def _on_link_clicked(self, _btn, url):
         if url:
@@ -691,7 +700,7 @@ class SettingsWindow(Adw.Window):
 
         ProjectEditDialog(self, None, save, prefill=prefill, cfg=self.cfg).present()
 
-    def _on_row_activated(self, _box, row):
+    def _on_row_activated(self, row, *_args):
         proj = getattr(row, "project", None)
         if proj:
             self._edit_project(proj)
