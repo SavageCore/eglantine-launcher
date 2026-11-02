@@ -99,7 +99,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         box.set_margin_start(12)
         box.set_margin_end(12)
 
-        group = Adw.PreferencesGroup(title="Settings")
+        group = Adw.PreferencesGroup()
 
         self.project_row = Adw.ComboRow(title="Project")
         self._project_ids = [p.get("id") for p in self.cfg.get("projects", [])]
@@ -200,7 +200,11 @@ class LauncherWindow(Adw.ApplicationWindow):
         # Banner sits edge-to-edge above the margined content; toasts
         # overlay everything transiently; Launch lives in a proper
         # bottom ActionBar instead of a hand-rolled button box.
+        # Box is centered so extra height (e.g. after the About dialog
+        # grew the window) splits above/below instead of pooling as
+        # dead space between the prefs and the Launch bar.
         box.set_vexpand(True)
+        box.set_valign(Gtk.Align.CENTER)
         content_wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         content_wrap.append(self.banner)
         content_wrap.append(box)
