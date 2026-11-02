@@ -157,6 +157,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.status_label.add_css_class("dim-label")
 
         self.progress = Gtk.ProgressBar()
+        self.progress.set_visible(False)
         box.append(self.progress)
 
         self.log_view = Gtk.TextView()
@@ -333,6 +334,8 @@ class LauncherWindow(Adw.ApplicationWindow):
     def _set_busy(self, busy):
         self._busy = busy
         GLib.idle_add(self.launch_btn.set_sensitive, not busy)
+        if not busy:
+            GLib.idle_add(self.progress.set_visible, False)
 
     @staticmethod
     def _make_version_factory(short):
@@ -736,6 +739,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         self._cancel_event.clear()
         self._set_build_proc(None)
         self.progress.set_fraction(0.0)
+        GLib.idle_add(self.progress.set_visible, True)
         self._last_fraction_time = 0.0
         # clear log
         self.log_view.get_buffer().set_text("")
