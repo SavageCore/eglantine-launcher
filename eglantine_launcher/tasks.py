@@ -5,8 +5,11 @@ import shutil
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import save as save_config
@@ -164,43 +167,193 @@ def infer_releases_url(source_url):
     return None
 
 
+def fetch_repo_info(source_url, cfg=None):
+    """Return raw repo dict for a github or forgejo URL, or {} on failure."""
+    host, owner, repo = parse_repo(source_url)
+    if not repo:
+        return {}
+    if host == "github":
+        url = f"https://api.github.com/repos/{owner}/{repo}"
+    elif host == "forgejo" or "git.eden-emu.dev" in (source_url or ""):
+        url = f"https://git.eden-emu.dev/api/v1/repos/{owner}/{repo}"
+    else:
+        return {}
+    try:
+        data = api_get_json(url, cfg, timeout=20)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def get_default_branch(source_url, cfg=None):
+    """Return the repo default branch name, or None if unknown."""
+    info = fetch_repo_info(source_url, cfg)
+    default = info.get("default_branch") if isinstance(info, dict) else None
+    return default if isinstance(default, str) and default else None
+
+
+def _parse_branch_timestamp(value):
+    """Parse an ISO-8601 commit timestamp, or None."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def sort_branch_names(names, dates=None, default=None):
+    """Default branch first, then newest commit first, then API order.
+
+    names: branch names in API order. dates: name -> datetime or None.
+    Undated branches keep their relative API order after dated ones.
+    """
+    dates = dates or {}
+    seen = set()
+    unique = []
+    for n in names or []:
+        if n and n not in seen:
+            seen.add(n)
+            unique.append(n)
+    ordered = []
+    rest = []
+    for n in unique:
+        if default and n == default:
+            continue
+        rest.append(n)
+    dated = [n for n in rest if dates.get(n) is not None]
+    undated = [n for n in rest if dates.get(n) is None]
+    dated.sort(key=lambda n: (dates[n], n.lower()), reverse=True)
+    if default and default in unique:
+        ordered.append(default)
+    ordered.extend(dated)
+    ordered.extend(undated)
+    return ordered
+
+
+def fetch_github_branch_dates(source_url, branches, cfg=None, max_workers=8, limit=500):
+    """Map branch name -> commit datetime for github repos.
+
+    One small commit lookup per branch. Failures are skipped so callers
+    always get a partial dict, never an exception.
+    """
+    host, owner, repo = parse_repo(source_url)
+    if host != "github" or not owner or not repo:
+        return {}
+    names = [b for b in (branches or []) if b][: max(int(limit or 500), 1)]
+    if not names:
+        return {}
+
+    def _one(branch):
+        try:
+            sha = urllib.parse.quote(branch, safe="")
+            url = f"https://api.github.com/repos/{owner}/{repo}/commits?sha={sha}&per_page=1"
+            data = api_get_json(url, cfg, timeout=10)
+            first = data[0] if isinstance(data, list) and data else None
+            commit = (first.get("commit") or {}) if isinstance(first, dict) else {}
+            for section in ("committer", "author"):
+                section_data = commit.get(section) or {}
+                dt = _parse_branch_timestamp(section_data.get("date"))
+                if dt is not None:
+                    return branch, dt
+        except Exception:
+            pass
+        return branch, None
+
+    dates = {}
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            for branch, dt in pool.map(_one, names):
+                if dt is not None:
+                    dates[branch] = dt
+    except Exception:
+        pass
+    return dates
+
+
+def _fetch_all_pages(base_url, cfg, page_size=100, max_pages=10, timeout=20):
+    """Follow page=1..N until a short page; return concatenated list items."""
+    items = []
+    for page in range(1, max_pages + 1):
+        sep = "&" if "?" in base_url else "?"
+        try:
+            data = api_get_json(f"{base_url}{sep}page={page}", cfg, timeout=timeout)
+        except Exception:
+            break
+        if not isinstance(data, list) or not data:
+            break
+        items.extend(b for b in data if isinstance(b, dict))
+        if len(data) < page_size:
+            break
+    return items
+
+
+def should_fetch_branch_dates(source_url, branches, cfg=None):
+    """Gate for the per-branch GitHub commit-date lookup.
+
+    That lookup costs one API call per branch, so without a token it
+    would burn most of the 60/hour anonymous budget on branchy repos.
+    Fetch when authenticated, or when the list is small enough to be cheap.
+    """
+    if parse_repo(source_url)[0] != "github":
+        return False
+    if (cfg or {}).get("github_token") or os.environ.get("GITHUB_TOKEN"):
+        return True
+    return len(branches or []) <= 30
+
+
 def list_branches(source_url, limit=100, cfg=None):
-    """Return branch name list for a github or forgejo repo URL."""
+    """Return branch names, default first then newest commit first.
+
+    Forgejo timestamps come embedded in the branch list, so sorting is
+    free. GitHub branch entries carry no date, so the initial return is
+    default-first in API order; call fetch_github_branch_dates() in the
+    background and re-sort with sort_branch_names() to match the web UI.
+    """
     host, owner, repo = parse_repo(source_url)
     if not owner or not repo:
         return []
+    page_size = min(max(int(limit or 100), 1), 100)
     if host == "github":
-        url = f"https://api.github.com/repos/{owner}/{repo}/branches?per_page={limit}"
+        url = f"https://api.github.com/repos/{owner}/{repo}/branches?per_page={page_size}"
     elif host == "forgejo" or "git.eden-emu.dev" in (source_url or ""):
-        url = f"https://git.eden-emu.dev/api/v1/repos/{owner}/{repo}/branches?limit={limit}"
+        url = f"https://git.eden-emu.dev/api/v1/repos/{owner}/{repo}/branches?limit={page_size}"
     else:
         return []
-    data = api_get_json(url, cfg, timeout=20)
+    data = _fetch_all_pages(url, cfg, page_size=page_size)
     names = []
-    for b in data if isinstance(data, list) else []:
-        n = b.get("name") if isinstance(b, dict) else None
-        if n:
-            names.append(n)
-    return names
+    dates = {}
+    for b in data:
+        n = b.get("name")
+        if not n:
+            continue
+        names.append(n)
+        commit = b.get("commit") or {}
+        if isinstance(commit, dict):
+            dt = _parse_branch_timestamp(commit.get("timestamp") or commit.get("created"))
+            if dt is not None:
+                dates[n] = dt
+    try:
+        default = get_default_branch(source_url, cfg)
+    except Exception:
+        default = None
+    return sort_branch_names(names, dates, default)
 
 
 def fetch_repo_name(source_url, cfg=None):
-    host, owner, repo = parse_repo(source_url)
-    if not repo:
+    if not parse_repo(source_url)[2]:
         return ""
-    if host == "github":
-        url = f"https://api.github.com/repos/{owner}/{repo}"
-        try:
-            return api_get_json(url, cfg, timeout=20).get("name", repo)
-        except Exception:
-            return repo
-    if host == "forgejo" or "git.eden-emu.dev" in (source_url or ""):
-        url = f"https://git.eden-emu.dev/api/v1/repos/{owner}/{repo}"
-        try:
-            return api_get_json(url, cfg, timeout=20).get("name", repo)
-        except Exception:
-            return repo
-    return repo
+    info = fetch_repo_info(source_url, cfg)
+    if not info:
+        return parse_repo(source_url)[2]
+    name = info.get("name")
+    return name if isinstance(name, str) and name else parse_repo(source_url)[2]
 
 
 def release_platforms(cfg_or_project):
@@ -415,6 +568,32 @@ def remove_shortcut(cfg, pid):
     if path.exists():
         path.unlink()
     return not path.exists()
+
+
+def remove_project_data(cfg, pid):
+    """Delete on-disk artifacts for a project: downloads, source checkout, icon, shortcut."""
+    if not pid or any(sep in pid for sep in ("/", "\\")) or pid in (".", ".."):
+        return
+    for base_key in ("install_dir", "source_dir"):
+        base = cfg.get(base_key)
+        if not base:
+            continue
+        target = Path(base) / pid
+        try:
+            if target.is_dir() and target.parent == Path(base):
+                shutil.rmtree(target)
+        except Exception:
+            pass
+    try:
+        icon = Path(cfg.get("install_dir", "")) / "icons" / f"{pid}.png"
+        if icon.is_file():
+            icon.unlink()
+    except Exception:
+        pass
+    try:
+        remove_shortcut(cfg, pid)
+    except Exception:
+        pass
 
 
 def source_dir(cfg):

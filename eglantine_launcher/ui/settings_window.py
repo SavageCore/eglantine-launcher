@@ -10,7 +10,17 @@ from gi.repository import Adw, GLib, Gtk
 
 from ..config import load as load_config
 from ..config import save as save_config
-from ..tasks import fetch_repo_name, infer_releases_url, list_branches
+from ..tasks import (
+    fetch_github_branch_dates,
+    fetch_repo_name,
+    get_default_branch,
+    infer_releases_url,
+    list_branches,
+    parse_repo,
+    remove_project_data,
+    should_fetch_branch_dates,
+    sort_branch_names,
+)
 from ..tray import ASK_LABEL, CLOSE_CHOICES, LAUNCH_CHOICES
 
 
@@ -64,8 +74,12 @@ class AddSourcePage(Gtk.Box):
         try:
             name = fetch_repo_name(url, self.cfg) or ""
             branches = list_branches(url, cfg=self.cfg)
+            try:
+                default_branch = get_default_branch(url, self.cfg)
+            except Exception:
+                default_branch = None
             releases_url = infer_releases_url(url)
-            GLib.idle_add(self.on_next, url, name, branches, releases_url, "")
+            GLib.idle_add(self.on_next, url, name, branches, releases_url, "", default_branch)
         except Exception as e:
             GLib.idle_add(self.error_label.set_label, f"Could not read repository: {e}")
             GLib.idle_add(self.next_btn.set_sensitive, True)
@@ -74,12 +88,15 @@ class AddSourcePage(Gtk.Box):
 class ProjectEditDialog(Adw.Window):
     """Step 2 (add) or full edit dialog. No ID field, branch is a dropdown."""
 
-    def __init__(self, parent, project=None, on_save=None, prefill=None):
+    def __init__(self, parent, project=None, on_save=None, prefill=None, cfg=None):
         super().__init__(transient_for=parent, modal=True, title="Edit source" if project else "New source")
         self.set_default_size(480, 420)
         self.on_save = on_save
         self.project = dict(project) if project else {}
         prefill = prefill or {}
+        self._cfg = cfg or {}
+        self._source_url = self.project.get("source_url", "") or prefill.get("source_url", "")
+        self._default_branch = prefill.get("default_branch")
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         box.set_margin_top(12)
@@ -99,6 +116,13 @@ class ProjectEditDialog(Adw.Window):
 
         group2 = Adw.PreferencesGroup()
         self.branch_row = Adw.ComboRow(title="Branch")
+        if hasattr(self.branch_row, "set_enable_search"):
+            self.branch_row.set_enable_search(True)
+        # The search entry needs an expression to obtain strings from items;
+        # without it the entry shows but never filters.
+        self.branch_row.set_expression(Gtk.PropertyExpression.new(Gtk.StringObject, None, "string"))
+        if hasattr(self.branch_row, "set_search_match_mode"):
+            self.branch_row.set_search_match_mode(Gtk.StringFilterMatchMode.SUBSTRING)
         branches = prefill.get("branches", []) or []
         current = self.project.get("branch", "") or prefill.get("branch", "")
         if current and current not in branches:
@@ -109,6 +133,8 @@ class ProjectEditDialog(Adw.Window):
         self.branch_row.set_model(Gtk.StringList.new(branches))
         self.branch_row.set_selected(branches.index(current) if current in branches else 0)
         group2.add(self.branch_row)
+        if parse_repo(self._source_url)[0] == "github" and len(branches) > 1:
+            threading.Thread(target=self._refresh_github_order, daemon=True).start()
 
         self.releases_entry = Adw.EntryRow(title="Releases URL")
         self.releases_entry.set_text(self.project.get("releases_url") or prefill.get("releases_url") or "")
@@ -148,6 +174,44 @@ class ProjectEditDialog(Adw.Window):
         box.append(btn_box)
 
         self.set_content(box)
+
+    def update_branches(self, branches):
+        """Replace the dropdown model, preserving the selected branch name."""
+        branches = [b for b in (branches or []) if b]
+        if not branches:
+            return
+        selected = None
+        current = getattr(self, "_branches", [])
+        try:
+            idx = self.branch_row.get_selected()
+            if 0 <= idx < len(current):
+                selected = current[idx]
+        except Exception:
+            selected = None
+        self._branches = branches
+        self.branch_row.set_model(Gtk.StringList.new(branches))
+        if selected in branches:
+            self.branch_row.set_selected(branches.index(selected))
+        else:
+            self.branch_row.set_selected(0)
+
+    def _refresh_github_order(self):
+        try:
+            if not should_fetch_branch_dates(self._source_url, self._branches, cfg=self._cfg):
+                return
+            dates = fetch_github_branch_dates(self._source_url, self._branches, cfg=self._cfg)
+            if not dates:
+                return
+            if self._default_branch is None:
+                try:
+                    self._default_branch = get_default_branch(self._source_url, self._cfg)
+                except Exception:
+                    pass
+            ordered = sort_branch_names(self._branches, dates, self._default_branch)
+            if ordered != self._branches:
+                GLib.idle_add(self.update_branches, ordered)
+        except Exception:
+            pass
 
     def _save(self, *_args):
         name = self.name_entry.get_text().strip()
@@ -242,32 +306,28 @@ class SettingsWindow(Adw.Window):
         window_group.add(self.close_behavior_row)
         box.append(window_group)
 
+        src_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        src_header.set_valign(Gtk.Align.CENTER)
         lbl = Gtk.Label(label="Emulator sources")
         lbl.add_css_class("heading")
         lbl.set_xalign(0)
-        box.append(lbl)
+        lbl.set_hexpand(True)
+        src_header.append(lbl)
+        add_btn = Gtk.Button(label="Add")
+        add_btn.connect("clicked", self._add)
+        src_header.append(add_btn)
+        box.append(src_header)
 
         self.list_box = Gtk.ListBox()
         self.list_box.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self.list_box.add_css_class("boxed-list")
+        self.list_box.connect("row-activated", self._on_row_activated)
 
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_child(self.list_box)
         scrolled.set_vexpand(True)
         scrolled.set_min_content_height(240)
         box.append(scrolled)
-
-        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        add_btn = Gtk.Button(label="Add")
-        add_btn.connect("clicked", self._add)
-        btn_box.append(add_btn)
-        edit_btn = Gtk.Button(label="Edit")
-        edit_btn.connect("clicked", self._edit)
-        btn_box.append(edit_btn)
-        remove_btn = Gtk.Button(label="Remove")
-        remove_btn.connect("clicked", self._remove)
-        btn_box.append(remove_btn)
-        box.append(btn_box)
 
         close_btn = Gtk.Button(label="Close")
         close_btn.connect("clicked", lambda *_: self.close())
@@ -443,6 +503,7 @@ class SettingsWindow(Adw.Window):
             self.list_box.remove(row)
         for p in self.cfg.get("projects", []):
             row = Adw.ActionRow(title=p.get("name", p.get("id", "")), subtitle=p.get("source_url", ""))
+            row.set_activatable(True)
             url = p.get("source_url", "")
             globe = Path(__file__).resolve().parents[1] / "icons" / "globe-symbolic.svg"
             if globe.exists():
@@ -452,9 +513,16 @@ class SettingsWindow(Adw.Window):
             link_btn = Gtk.Button()
             link_btn.set_child(icon)
             link_btn.add_css_class("flat")
+            link_btn.set_valign(Gtk.Align.CENTER)
             link_btn.set_tooltip_text(f"Open {url}")
             link_btn.connect("clicked", self._on_link_clicked, url)
             row.add_suffix(link_btn)
+            del_btn = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+            del_btn.add_css_class("flat")
+            del_btn.set_valign(Gtk.Align.CENTER)
+            del_btn.set_tooltip_text(f"Remove {p.get('name', p.get('id', ''))}")
+            del_btn.connect("clicked", self._on_delete_clicked, p)
+            row.add_suffix(del_btn)
             row.project = p
             self.list_box.append(row)
 
@@ -462,20 +530,17 @@ class SettingsWindow(Adw.Window):
         if url:
             Gtk.show_uri(self, url, 0)
 
-    def _selected_project(self):
-        row = self.list_box.get_selected_row()
-        return getattr(row, "project", None) if row else None
-
     def _add(self, *_args):
         self.stack.set_visible_child_name("add")
 
-    def _on_repo_next(self, url, name, branches, releases_url, _err):
+    def _on_repo_next(self, url, name, branches, releases_url, _err, default_branch=None):
         prefill = {
             "source_url": url,
             "name": name,
             "branches": branches,
             "releases_url": releases_url,
             "branch": branches[0] if branches else "master",
+            "default_branch": default_branch,
         }
 
         def save(project, old_id):
@@ -486,14 +551,15 @@ class SettingsWindow(Adw.Window):
             if self.on_changed:
                 self.on_changed()
 
-        ProjectEditDialog(self, None, save, prefill=prefill).present()
+        ProjectEditDialog(self, None, save, prefill=prefill, cfg=self.cfg).present()
 
-    def _edit(self, *_args):
-        proj = self._selected_project()
-        if not proj:
-            return
+    def _on_row_activated(self, _box, row):
+        proj = getattr(row, "project", None)
+        if proj:
+            self._edit_project(proj)
 
-        def open_editor(branches):
+    def _edit_project(self, proj):
+        def open_editor(branches, default_branch=None):
             def save(project, old_id):
                 projects = self.cfg.get("projects", [])
                 for i, p in enumerate(projects):
@@ -506,24 +572,53 @@ class SettingsWindow(Adw.Window):
                     self.on_changed()
 
             prefill = {"branches": branches} if branches else {}
-            ProjectEditDialog(self, proj, save, prefill=prefill).present()
+            if default_branch:
+                prefill["default_branch"] = default_branch
+            ProjectEditDialog(self, proj, save, prefill=prefill, cfg=self.cfg).present()
 
         def fetch():
             try:
                 branches = list_branches(proj.get("source_url", ""), cfg=self.cfg) or []
             except Exception:
                 branches = []
+            try:
+                default_branch = get_default_branch(proj.get("source_url", ""), self.cfg)
+            except Exception:
+                default_branch = None
             if not branches and proj.get("branch"):
                 branches = [proj["branch"]]
-            GLib.idle_add(open_editor, branches)
+            GLib.idle_add(open_editor, branches, default_branch)
 
         threading.Thread(target=fetch, daemon=True).start()
 
-    def _remove(self, *_args):
-        proj = self._selected_project()
+    def _on_delete_clicked(self, _btn, proj):
+        name = proj.get("name", proj.get("id", "this source"))
+        dlg = Adw.MessageDialog(
+            transient_for=self,
+            modal=True,
+            heading=f"Remove {name}?",
+            body="Removes the source and everything downloaded for it, including the source checkout and desktop shortcut.",
+        )
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("remove", "Remove")
+        dlg.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_default_response("cancel")
+        dlg.set_close_response("cancel")
+
+        def on_response(_dlg, response):
+            if response == "remove":
+                self._remove_project(proj)
+            _dlg.close()
+
+        dlg.connect("response", on_response)
+        dlg.present()
+
+    def _remove_project(self, proj):
         if not proj:
             return
-        self.cfg["projects"] = [p for p in self.cfg.get("projects", []) if p.get("id") != proj.get("id")]
+        pid = proj.get("id")
+        remove_project_data(self.cfg, pid)
+        self.cfg["projects"] = [p for p in self.cfg.get("projects", []) if p.get("id") != pid]
         if proj.get("remote") and proj.get("id") not in self.cfg.get("hidden_sources", []):
             self.cfg.setdefault("hidden_sources", []).append(proj["id"])
         if self.cfg.get("project") == proj.get("id"):

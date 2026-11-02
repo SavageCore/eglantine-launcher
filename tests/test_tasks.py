@@ -476,3 +476,228 @@ def test_find_release_for_commit_no_asset_falls_back_to_source(monkeypatch):
     cfg = _match_cfg()
     # commit matches, but no Linux asset: build from source instead
     assert find_release_for_commit(cfg, "a42b4d4c744e12ce5262648eee50daecd1ca456") is None
+
+
+def test_parse_branch_timestamp():
+    from eglantine_launcher.tasks import _parse_branch_timestamp
+
+    assert _parse_branch_timestamp("2026-10-31T00:16:57Z").year == 2026
+    assert _parse_branch_timestamp("2026-11-01T19:49:46+01:00") is not None
+    assert _parse_branch_timestamp("") is None
+    assert _parse_branch_timestamp(None) is None
+    assert _parse_branch_timestamp("not-a-date") is None
+
+
+def test_sort_branch_names_default_first_then_newest():
+    from datetime import datetime, timezone
+
+    from eglantine_launcher.tasks import sort_branch_names
+
+    names = ["b-old", "main", "b-new"]
+    dates = {
+        "b-old": datetime(2024, 1, 1, tzinfo=timezone.utc),
+        "b-new": datetime(2026, 1, 1, tzinfo=timezone.utc),
+        "main": datetime(2020, 1, 1, tzinfo=timezone.utc),
+    }
+    assert sort_branch_names(names, dates, "main") == ["main", "b-new", "b-old"]
+    # undated branches keep API order after dated ones
+    assert sort_branch_names(["z", "a", "main"], {}, "main") == ["main", "z", "a"]
+    # unknown default leaves date-desc order intact
+    assert sort_branch_names(["b-old", "b-new"], dates, "ghost") == ["b-new", "b-old"]
+
+
+def test_get_default_branch(monkeypatch):
+    import urllib.request
+
+    from conftest import FakeResponse
+
+    from eglantine_launcher import tasks
+
+    def fake(url_or_req, timeout=None):
+        url = url_or_req.full_url if hasattr(url_or_req, "full_url") else url_or_req
+        assert "/branches" not in url and "/commits" not in url
+        return FakeResponse({"name": "Eden", "default_branch": "nx2"})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    assert tasks.get_default_branch("https://github.com/o/r.git", {}) == "nx2"
+
+
+def test_list_branches_forgejo_sorts_by_date(monkeypatch):
+    import urllib.request
+
+    from conftest import FakeResponse
+
+    from eglantine_launcher import tasks
+
+    branches = [
+        {"name": "old", "commit": {"timestamp": "2024-01-01T00:00:00Z"}},
+        {"name": "master", "commit": {"timestamp": "2020-01-01T00:00:00Z"}},
+        {"name": "new", "commit": {"timestamp": "2026-01-01T00:00:00Z"}},
+    ]
+
+    def fake(url_or_req, timeout=None):
+        url = url_or_req.full_url if hasattr(url_or_req, "full_url") else url_or_req
+        if "/branches" in url:
+            return FakeResponse(branches)
+        return FakeResponse({"name": "r", "default_branch": "master"})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    assert tasks.list_branches("https://git.eden-emu.dev/o/r.git", cfg={}) == [
+        "master",
+        "new",
+        "old",
+    ]
+
+
+def test_list_branches_github_default_first(monkeypatch):
+    import urllib.request
+
+    from conftest import FakeResponse
+
+    from eglantine_launcher import tasks
+
+    branches = [
+        {"name": "zebra", "commit": {}},
+        {"name": "main", "commit": {}},
+        {"name": "apple", "commit": {}},
+    ]
+
+    def fake(url_or_req, timeout=None):
+        url = url_or_req.full_url if hasattr(url_or_req, "full_url") else url_or_req
+        if "/branches" in url:
+            return FakeResponse(branches)
+        return FakeResponse({"name": "r", "default_branch": "main"})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    assert tasks.list_branches("https://github.com/o/r.git", cfg={}) == ["main", "zebra", "apple"]
+
+
+def test_fetch_github_branch_dates(monkeypatch):
+    from eglantine_launcher import tasks
+
+    def fake_api(url, cfg=None, timeout=None):
+        if "sha=new" in url:
+            return [{"commit": {"committer": {"date": "2026-01-01T00:00:00Z"}}}]
+        if "sha=old" in url:
+            return [{"commit": {"committer": {"date": "2024-01-01T00:00:00Z"}}}]
+        raise AssertionError(url)
+
+    monkeypatch.setattr(tasks, "api_get_json", fake_api)
+    dates = tasks.fetch_github_branch_dates("https://github.com/o/r.git", ["new", "old"], cfg={})
+    ordered = tasks.sort_branch_names(["old", "main", "new"], dates, "main")
+    assert ordered == ["main", "new", "old"]
+
+
+def _paged_branches(monkeypatch, pages):
+    """Mock api_get_json with per-page branch payloads; repo default is main."""
+    import urllib.request
+
+    from conftest import FakeResponse
+
+    calls = []
+
+    def fake(url_or_req, timeout=None):
+        url = url_or_req.full_url if hasattr(url_or_req, "full_url") else url_or_req
+        calls.append(url)
+        if "/branches" in url:
+            import re
+
+            m = re.search(r"[?&]page=(\d+)", url)
+            page = int(m.group(1)) if m else 1
+            return FakeResponse(pages[min(page, len(pages)) - 1] if page <= len(pages) else [])
+        return FakeResponse({"name": "r", "default_branch": "main"})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    return calls
+
+
+def _branch_page(names):
+    return [{"name": n, "commit": {}} for n in names]
+
+
+def test_list_branches_paginates_github(monkeypatch):
+    from eglantine_launcher import tasks
+
+    full = ["main"] + [f"b{i:03d}" for i in range(1, 100)]
+    calls = _paged_branches(monkeypatch, [_branch_page(full), _branch_page(["nx2-experimental"])])
+    names = tasks.list_branches("https://github.com/o/r.git", cfg={})
+    assert "nx2-experimental" in names
+    assert len(names) == 101
+    assert names[0] == "main"  # default pinned despite page order
+    assert sum("/branches" in c for c in calls) == 2
+
+
+def test_list_branches_stops_on_short_page(monkeypatch):
+    from eglantine_launcher import tasks
+
+    calls = _paged_branches(monkeypatch, [_branch_page(["main", "other"])])
+    assert tasks.list_branches("https://github.com/o/r.git", cfg={}) == ["main", "other"]
+    assert sum("/branches" in c for c in calls) == 1
+
+
+def test_should_fetch_branch_dates():
+    from eglantine_launcher.tasks import should_fetch_branch_dates
+
+    assert should_fetch_branch_dates("https://github.com/o/r.git", ["a"] * 200, {"github_token": "t"})
+    assert should_fetch_branch_dates("https://github.com/o/r.git", ["a"] * 30, {})
+    assert not should_fetch_branch_dates("https://github.com/o/r.git", ["a"] * 31, {})
+    assert not should_fetch_branch_dates("https://git.eden-emu.dev/o/r.git", ["a"], {"github_token": "t"})
+
+
+def test_fetch_github_branch_dates_limit(monkeypatch):
+    from eglantine_launcher import tasks
+
+    seen = []
+
+    def fake_api(url, cfg=None, timeout=None):
+        seen.append(url)
+        return [{"commit": {"committer": {"date": "2026-01-01T00:00:00Z"}}}]
+
+    monkeypatch.setattr(tasks, "api_get_json", fake_api)
+    dates = tasks.fetch_github_branch_dates("https://github.com/o/r.git", ["one", "two"], cfg={}, limit=1)
+    assert set(dates) == {"one"}
+    assert len(seen) == 1
+
+
+def test_remove_project_data_deletes_artifacts(tmp_path, fake_home, monkeypatch):
+    from eglantine_launcher import tasks
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    install = tmp_path / "install"
+    (install / "eglantine" / "subdir").mkdir(parents=True)
+    (install / "eglantine" / "eglantine.AppImage").write_text("x")
+    (install / "icons").mkdir(parents=True)
+    (install / "icons" / "eglantine.png").write_text("x")
+    (install / "other").mkdir()
+    (install / "other" / "keep").write_text("x")
+    src = tmp_path / "src"
+    (src / "eglantine" / ".git").mkdir(parents=True)
+    cfg = {"install_dir": str(install), "source_dir": str(src), "projects": []}
+    tasks.install_shortcut(
+        {**cfg, "projects": [{"id": "eglantine", "name": "Eglantine", "icon_url": None}]},
+        "eglantine",
+        "/app/root",
+    )
+    assert tasks.shortcut_path(cfg, "eglantine").exists()
+
+    tasks.remove_project_data(cfg, "eglantine")
+
+    assert not (install / "eglantine").exists()
+    assert not (src / "eglantine").exists()
+    assert not (install / "icons" / "eglantine.png").exists()
+    assert not tasks.shortcut_path(cfg, "eglantine").exists()
+    assert (install / "other" / "keep").read_text() == "x"
+    assert install.is_dir() and src.is_dir()
+
+
+def test_remove_project_data_rejects_unsafe_ids(tmp_path):
+    from eglantine_launcher import tasks
+
+    install = tmp_path / "install"
+    install.mkdir()
+    (install / "victim").mkdir()
+    cfg = {"install_dir": str(install), "source_dir": str(tmp_path / "src"), "projects": []}
+    tasks.remove_project_data(cfg, "../victim")
+    tasks.remove_project_data(cfg, "")
+    tasks.remove_project_data(cfg, None)
+    assert (install / "victim").is_dir()

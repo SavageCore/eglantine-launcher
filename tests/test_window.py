@@ -370,3 +370,128 @@ def test_launched_returns_false_without_proc(needs_display, fake_home):
         assert window._launched(None) is False
     finally:
         window.close()
+
+
+def test_branch_row_search_is_wired(needs_display, fake_home):
+    """The branch search entry needs an expression or it shows but never filters."""
+    from gi.repository import Gtk
+
+    from eglantine_launcher.ui.settings_window import ProjectEditDialog, SettingsWindow
+
+    window = SettingsWindow(None)
+    try:
+        dialog = ProjectEditDialog(
+            window,
+            None,
+            lambda *a: None,
+            prefill={
+                "source_url": "https://example.com/o/r.git",
+                "name": "r",
+                "branches": ["nx2", "nx2-experimental", "master"],
+                "branch": "nx2",
+            },
+            cfg={},
+        )
+        try:
+            assert dialog.branch_row.get_enable_search() is True
+            assert dialog.branch_row.get_expression() is not None
+            if hasattr(dialog.branch_row, "get_property"):
+                assert (
+                    dialog.branch_row.get_property("search-match-mode") == Gtk.StringFilterMatchMode.SUBSTRING
+                )
+        finally:
+            dialog.close()
+    finally:
+        window.close()
+
+
+def test_source_row_click_opens_edit(needs_display, fake_home, monkeypatch):
+    from eglantine_launcher.ui.settings_window import SettingsWindow
+
+    window = SettingsWindow(None)
+    try:
+        opened = []
+        monkeypatch.setattr(window, "_edit_project", lambda proj: opened.append(proj))
+        row = window.list_box.get_row_at_index(0)
+        assert row is not None
+        window._on_row_activated(window.list_box, row)
+        assert opened == [row.project]
+    finally:
+        window.close()
+
+
+def test_remove_project_updates_config(needs_display, fake_home):
+    from eglantine_launcher.config import load
+    from eglantine_launcher.ui.settings_window import SettingsWindow
+
+    window = SettingsWindow(None)
+    try:
+        first, second = window.cfg["projects"][0], window.cfg["projects"][1]
+        window.cfg["project"] = first["id"]
+        window._remove_project(first)
+        ids = [p["id"] for p in window.cfg["projects"]]
+        assert first["id"] not in ids
+        assert window.cfg["project"] == second["id"]
+        assert load()["project"] == second["id"]
+    finally:
+        window.close()
+
+
+def test_remove_remote_project_hides_it(needs_display, fake_home):
+    from eglantine_launcher.ui.settings_window import SettingsWindow
+
+    window = SettingsWindow(None)
+    try:
+        proj = dict(window.cfg["projects"][0], remote=True)
+        window.cfg["projects"][0] = proj
+        window._remove_project(proj)
+        assert proj["id"] not in [p["id"] for p in window.cfg["projects"]]
+        assert proj["id"] in window.cfg["hidden_sources"]
+    finally:
+        window.close()
+
+
+def test_delete_button_confirms_then_removes(needs_display, fake_home):
+    import gi
+
+    gi.require_version("Adw", "1")
+    from gi.repository import Adw, Gtk
+
+    from eglantine_launcher.ui.settings_window import SettingsWindow
+
+    window = SettingsWindow(None)
+    try:
+        proj = window.cfg["projects"][0]
+        pid = proj["id"]
+        window._on_delete_clicked(None, proj)
+        dlg = next(w for w in Gtk.Window.list_toplevels() if isinstance(w, Adw.MessageDialog))
+        try:
+            assert dlg.get_heading() == f"Remove {proj['name']}?"
+            dlg.response("remove")
+        finally:
+            dlg.close()
+        assert pid not in [p["id"] for p in window.cfg["projects"]]
+    finally:
+        window.close()
+
+
+def test_delete_button_cancel_keeps_project(needs_display, fake_home):
+    import gi
+
+    gi.require_version("Adw", "1")
+    from gi.repository import Adw, Gtk
+
+    from eglantine_launcher.ui.settings_window import SettingsWindow
+
+    window = SettingsWindow(None)
+    try:
+        proj = window.cfg["projects"][0]
+        window._on_delete_clicked(None, proj)
+        dlg = next(w for w in Gtk.Window.list_toplevels() if isinstance(w, Adw.MessageDialog))
+        try:
+            dlg.response("cancel")
+        finally:
+            dlg.close()
+        assert proj["id"] in [p["id"] for p in window.cfg["projects"]]
+    finally:
+        window.close()
