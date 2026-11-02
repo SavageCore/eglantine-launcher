@@ -53,9 +53,12 @@ class FakeWatcher:
         self._reg = bus.register_object(statusicon.WATCHER_PATH, node.interfaces[0], self._call, None, None)
 
     def _call(self, _conn, _sender, _path, _iface, method, params, invocation):
+        import sys
+
+        print(f"FakeWatcher._call method={method}", file=sys.stderr)
         if method == "RegisterStatusNotifierItem":
             self.services.append(params[0])
-            invocation.return_value(None)
+            invocation.return_value(GLib.Variant("()", ()))
         else:
             invocation.return_error_literal(Gio.dbus_error_quark(), Gio.DBusError.UNKNOWN_METHOD, method)
 

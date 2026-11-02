@@ -221,9 +221,9 @@ def _show(on_show, on_quit, icon_path):
                     )
             elif method == "Activate" or method == "SecondaryActivate":
                 on_show()
-                invocation.return_value(None)
+                invocation.return_value(GLib.Variant("()", ()))
             elif method == "Scroll":
-                invocation.return_value(None)
+                invocation.return_value(GLib.Variant("()", ()))
             elif method == "ContextMenu":
                 invocation.return_value(GLib.Variant("(o)", (MENU_PATH,)))
             else:
@@ -303,7 +303,7 @@ def _show(on_show, on_quit, icon_path):
                         on_show()
                     elif params[0] == 2:
                         on_quit()
-                invocation.return_value(None)
+                invocation.return_value(GLib.Variant("()", ()))
             elif method == "EventGroup":
                 invocation.return_value(GLib.Variant("(ai)", ([],)))
             elif method == "AboutToShow":
