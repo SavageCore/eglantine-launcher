@@ -24,3 +24,9 @@ working branch, with the suite and `ruff check` / `ruff format --check`
 green. Larger work goes on a feature branch; when done and tested it
 gets squashed and merged. Never batch unrelated features into a single
 end-of-session commit.
+
+Commit subjects must be conventional - the `commit-msg` hook rejects
+anything else, so get it right the first time:
+`type(scope): summary` (e.g. `fix(source): ...`), a plain version
+(`0.1.3`), or `Merge ...`. Allowed types: feat, fix, refactor, perf,
+docs, chore, style, test, ci, build.
