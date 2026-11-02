@@ -614,6 +614,10 @@ class LauncherWindow(Adw.ApplicationWindow):
             )
         except Exception:
             self._tray_icon = None
+        if self.cfg.get("tray_notice_shown"):
+            return
+        self.cfg["tray_notice_shown"] = True
+        save_config(self.cfg)
         try:
             app = self.get_application()
             if app is not None:

@@ -85,6 +85,8 @@ def default_config():
         # close_behavior: "quit" | "tray" | None
         "minimize_on_launch": None,
         "close_behavior": None,
+        # The "Running in the background" notification only shows once.
+        "tray_notice_shown": False,
         "projects": [p.copy() for p in DEFAULT_PROJECTS],
     }
 
