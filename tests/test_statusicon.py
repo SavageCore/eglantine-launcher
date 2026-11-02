@@ -68,8 +68,27 @@ def watcher(session_bus):
     if _watcher_present(session_bus):
         yield None
         return
+    import os
+
+    # Own connection, like a real watcher process. Sharing session_bus
+    # deadlocks _show's blocking Register call on some GLib versions:
+    # the handler never gets dispatched and call_sync times out.
+    addr = os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+    if not addr:
+        yield None
+        return
     try:
-        owned = session_bus.call_sync(
+        wconn = Gio.DBusConnection.new_for_address_sync(
+            addr,
+            Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
+            None,
+            None,
+        )
+    except Exception:
+        yield None
+        return
+    try:
+        owned = wconn.call_sync(
             "org.freedesktop.DBus",
             "/org/freedesktop/DBus",
             "org.freedesktop.DBus",
@@ -86,10 +105,10 @@ def watcher(session_bus):
     except Exception:
         yield None
         return
-    fake = FakeWatcher(session_bus)
+    fake = FakeWatcher(wconn)
     yield fake
     try:
-        session_bus.call_sync(
+        wconn.call_sync(
             "org.freedesktop.DBus",
             "/org/freedesktop/DBus",
             "org.freedesktop.DBus",
@@ -102,6 +121,11 @@ def watcher(session_bus):
         )
     except Exception:
         pass
+    finally:
+        try:
+            wconn.close_sync(None)
+        except Exception:
+            pass
 
 
 class BusClient:
