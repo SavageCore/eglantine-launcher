@@ -170,14 +170,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y rpm gnupg
           printf '%s' "$RPM_SIGNING_KEY" | gpg --batch --import
+          gpg --batch --list-secret-keys "Eglantine Launcher"
           cat > ~/.rpmmacros <<'EOF'
           %_gpg_name Eglantine Launcher <eglantine-launcher@savagecore.github.io>
-          %__gpg_sign_cmd %{__gpg} gpg --force-v3-sigs --batch --no-verbose --no-armor --pinentry-mode loopback --passphrase '' --no-secmem-warning -u "%{_gpg_name}" -sbo %{__signature_filename} %{__plaintext_filename}
+          %__gpg_sign_cmd %{__gpg} gpg --batch --no-verbose --no-armor --pinentry-mode loopback --passphrase '' --no-secmem-warning -u "%{_gpg_name}" -sbo %{__signature_filename} %{__plaintext_filename}
           EOF
           rpm --addsign ./*.rpm
           echo "Verifying signatures:"
           sudo rpm --import packaging/RPM-GPG-KEY-eglantine-launcher
-          rpm -K ./*.rpm
+          if ! sudo rpm -K ./*.rpm; then
+            echo "--- verbose verification ---"
+            sudo rpm -Kv ./*.rpm || true
+            exit 1
+          fi
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
