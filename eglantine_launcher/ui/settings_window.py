@@ -450,6 +450,7 @@ class SettingsWindow(Adw.Window):
         lbl.set_hexpand(True)
         src_header.append(lbl)
         add_btn = Gtk.Button(label="Add")
+        add_btn.add_css_class("suggested-action")
         add_btn.connect("clicked", self._add)
         src_header.append(add_btn)
         box.append(src_header)

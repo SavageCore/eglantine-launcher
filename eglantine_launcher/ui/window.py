@@ -1066,4 +1066,5 @@ class LauncherWindow(Adw.ApplicationWindow):
             copyright="© 2026 SavageCore",
             developers=["SavageCore"],
         )
+        dialog.set_follows_content_size(True)
         dialog.present(self)
