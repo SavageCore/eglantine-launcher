@@ -4,14 +4,8 @@
 <body>
 <h1>Eglantine Launcher package repos</h1>
 <h2>Fedora / Nobara (dnf)</h2>
-<pre>sudo tee /etc/yum.repos.d/eglantine-launcher.repo &gt;/dev/null &lt;&lt;EOF
-[eglantine-launcher]
-name=Eglantine Launcher
-baseurl=https://savagecore.github.io/eglantine-launcher/dnf/
-enabled=1
-gpgcheck=0
-metadata_expire=6h
-EOF
+<pre>sudo rpm --import https://savagecore.github.io/eglantine-launcher/dnf/RPM-GPG-KEY-eglantine-launcher
+sudo curl -o /etc/yum.repos.d/eglantine-launcher.repo https://savagecore.github.io/eglantine-launcher/dnf/eglantine-launcher.repo
 sudo dnf install eglantine-launcher</pre>
 <h2>Debian / Ubuntu (apt)</h2>
 <pre>echo "deb [trusted=yes] https://savagecore.github.io/eglantine-launcher/apt/ /" | sudo tee /etc/apt/sources.list.d/eglantine-launcher.list
