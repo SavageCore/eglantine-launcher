@@ -138,6 +138,9 @@ def show_tray_icon(on_show, on_quit, icon_path=None):
     try:
         return _show(on_show, on_quit, icon_path)
     except Exception:
+        import traceback
+
+        traceback.print_exc()
         return None
 
 
