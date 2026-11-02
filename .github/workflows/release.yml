@@ -290,7 +290,7 @@ jobs:
           fi
           # nobara-updater replays with localpkg_gpgcheck=1: never publish unsigned RPMs
           sudo rpm --import packaging/RPM-GPG-KEY-eglantine-launcher
-          rpm -K "$site/dnf/"*.rpm
+          sudo rpm -K "$site/dnf/"*.rpm
           cp packaging/RPM-GPG-KEY-eglantine-launcher "$site/dnf/"
           cp packaging/eglantine-launcher.repo "$site/dnf/"
           ls -la "$site/dnf/" "$site/dnf/repodata/"
