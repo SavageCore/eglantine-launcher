@@ -701,3 +701,53 @@ def test_remove_project_data_rejects_unsafe_ids(tmp_path):
     tasks.remove_project_data(cfg, "")
     tasks.remove_project_data(cfg, None)
     assert (install / "victim").is_dir()
+
+
+def test_source_version_entries_ticks_have():
+    from eglantine_launcher.tasks import source_version_entries
+
+    commits = [
+        {"sha": "aaa1111", "commit": {"message": "new stuff"}},
+        {"sha": "bbb2222", "commit": {"message": "old stuff"}},
+    ]
+    labels, shas, subs, latest = source_version_entries(commits, {"bbb2222"})
+    assert labels == ["aaa1111 new stuff", "✓ bbb2222 old stuff"]
+    assert shas == ["aaa1111", "bbb2222"]
+    assert subs[0].startswith("aaa1111\n")
+    assert latest == "aaa1111"
+
+
+def test_source_version_entries_forgejo_id_and_skips():
+    from eglantine_launcher.tasks import source_version_entries
+
+    commits = [{"id": "abc123"}, {"nope": True}, {"sha": "def456", "commit": {}}]
+    labels, shas, subs, latest = source_version_entries(commits)
+    assert shas == ["abc123", "def456"]
+    assert labels == ["abc123 ", "def456 "]
+    assert latest == "abc123"
+
+
+def test_source_version_entries_prepends_installed():
+    from eglantine_launcher.tasks import source_version_entries
+
+    commits = [{"sha": "new111", "commit": {"message": "upstream moved on"}}]
+    labels, shas, subs, latest = source_version_entries(
+        commits, {"new111"}, installed_sha="old999", installed_present=True
+    )
+    assert latest == "new111"
+    assert shas == ["old999", "new111"]
+    assert labels[0] == "✓ old999 (installed build)"
+    assert labels[1] == "✓ new111 upstream moved on"
+    assert subs[0].startswith("old999\n")
+
+
+def test_source_version_entries_no_prepend_when_visible_or_missing():
+    from eglantine_launcher.tasks import source_version_entries
+
+    commits = [{"sha": "aaa", "commit": {"message": "m"}}]
+    _, shas, _, _ = source_version_entries(commits, set(), "aaa", True)
+    assert shas == ["aaa"]
+    _, shas, _, _ = source_version_entries(commits, set(), "zzz", False)
+    assert shas == ["aaa"]
+    _, shas, _, latest = source_version_entries([], set(), None, False)
+    assert shas == [] and latest is None

@@ -24,17 +24,30 @@ from ..tasks import (
     launch,
     list_commits,
     list_releases,
+    release_appimage_path,
     release_platforms,
     remove_shortcut,
     shortcut_name,
     shortcut_path,
     source_dir,
+    source_version_entries,
 )
 from ..tasks import arch as get_arch
 from ..tray import hide_to_tray, minimize_to_taskbar
 from ..tray import restore as restore_window
 from .deps_dialog import DepsDialog
 from .settings_window import SettingsWindow
+
+
+def version_tick_markup(text):
+    """Green markup for the installed-build row; None renders plain (white tick).
+
+    White tick = downloaded/built before. Green tick + "(installed build)"
+    suffix = what is on disk right now.
+    """
+    if text.startswith("✓ ") and (text.endswith("(installed build)") or text.endswith("(installed)")):
+        return '<span color="#4ade80">✓</span> ' + GLib.markup_escape_text(text[2:])
+    return None
 
 
 class LauncherWindow(Adw.ApplicationWindow):
@@ -263,10 +276,9 @@ class LauncherWindow(Adw.ApplicationWindow):
                 label.set_text(text)
                 return
             label.set_tooltip_text(text)
-            if text.startswith("✓ "):
-                label.set_markup('<span color="#4ade80">✓</span> ' + GLib.markup_escape_text(text[2:]))
-            elif text.endswith(" ✓"):
-                label.set_markup(GLib.markup_escape_text(text[:-2]) + ' <span color="#4ade80">✓</span>')
+            markup = version_tick_markup(text)
+            if markup is not None:
+                label.set_markup(markup)
             else:
                 label.set_text(text)
 
@@ -274,7 +286,9 @@ class LauncherWindow(Adw.ApplicationWindow):
         factory.connect("bind", on_bind)
         return factory
 
-    def _set_version_model(self, labels, tags, shas, subs=None, project_id=None, is_release=None):
+    def _set_version_model(
+        self, labels, tags, shas, subs=None, project_id=None, is_release=None, seen_shas=None
+    ):
         self._updating = True
         try:
             model = Gtk.StringList.new(labels)
@@ -285,7 +299,8 @@ class LauncherWindow(Adw.ApplicationWindow):
             self._commit_shas = shas or []
             self._version_subs = subs or []
             if project_id:
-                self._record_seen(project_id, bool(is_release), tags or [], shas or [])
+                seen = seen_shas if seen_shas is not None else (shas or [])
+                self._record_seen(project_id, bool(is_release), tags or [], seen)
         finally:
             self._updating = False
         return False
@@ -382,8 +397,19 @@ class LauncherWindow(Adw.ApplicationWindow):
                     rels = list_releases(cfg)
                     have = set(cfg.get("downloaded_releases", []))
                     tags = [r.get("tag_name") for r in rels if r.get("tag_name")]
+                    installed_tag = cfg.get("last_release_tag")
+                    try:
+                        installed_here = bool(installed_tag) and release_appimage_path(cfg).exists()
+                    except Exception:
+                        installed_here = False
+
+                    def _tag_label(t):
+                        if t == installed_tag and installed_here:
+                            return f"✓ {t} (installed)"
+                        return ("✓ " if t in have else "") + t
+
                     labels = ["Latest" + (" ✓" if tags and tags[0] in have else "")]
-                    labels += [("✓ " if t in have else "") + t for t in tags]
+                    labels += [_tag_label(t) for t in tags]
                     subs = [
                         f"{r.get('name') or ''}\n{(r.get('body') or '').splitlines()[0] if r.get('body') else ''}".strip()
                         for r in rels
@@ -398,29 +424,26 @@ class LauncherWindow(Adw.ApplicationWindow):
 
             def worker():
                 try:
-                    commits = list_commits(cfg)
+                    commits = list_commits(cfg, 50)
                     have = set(cfg.get("built_commits", []))
-                    shas = []
-                    labels = []
-                    subs = []
-                    for c in commits:
-                        sha = c.get("sha") if isinstance(c, dict) else None
-                        if not sha and isinstance(c, dict):
-                            sha = c.get("id")
-                        if not sha:
-                            continue
-                        shas.append(sha)
-                        msg = ""
-                        if isinstance(c, dict):
-                            commit = c.get("commit", {})
-                            msg = commit.get("message", "") if isinstance(commit, dict) else ""
-                        first = msg.splitlines()[0] if msg else ""
-                        tick = "✓ " if sha in have else ""
-                        labels.append(f"{tick}{sha[:7]} {first[:70]}")
-                        subs.append(f"{sha}\n{msg.strip()}" if msg else sha)
-                    latest_tick = " ✓" if shas and shas[0] in have else ""
+                    installed = cfg.get("last_source_commit")
+                    binary = source_dir(cfg) / "build" / "release" / "bin"
+                    binary = binary / ("eglantine.exe" if is_windows() else "eglantine")
+                    labels, shas, subs, latest = source_version_entries(
+                        commits, have, installed, binary.exists()
+                    )
+                    latest_tick = " ✓" if latest in have else ""
                     labels.insert(0, "Latest" + latest_tick)
-                    GLib.idle_add(self._set_version_model, labels, [], shas, subs, cfg.get("project"), False)
+                    GLib.idle_add(
+                        self._set_version_model,
+                        labels,
+                        [],
+                        shas,
+                        subs,
+                        cfg.get("project"),
+                        False,
+                        [latest] if latest else [],
+                    )
                 except Exception:
                     GLib.idle_add(self._set_version_model, ["Latest"], [], [])
 
@@ -687,6 +710,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         return True
 
     def _worker(self):
+        launched = False
         try:
             mode = getattr(self, "_launch_mode", self.cfg.get("mode", "release"))
             info = next(
@@ -706,7 +730,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                     status_cb=self._set_status,
                     tag=tag,
                 )
-                self._launched(launch(appimage))
+                launched = self._launched(launch(appimage))
             else:
                 if not self.cfg.get("source_enabled", True):
                     self._set_status("Source builds are hidden (Settings).")
@@ -729,7 +753,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                         log_cb=self._append_log,
                         commit=commit,
                     )
-                    self._launched(launch(binary))
+                    launched = self._launched(launch(binary))
                     return
                 tag = find_release_for_commit(self.cfg, resolved) if resolved else None
                 if tag:
@@ -740,7 +764,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                             status_cb=self._set_status,
                             tag=tag,
                         )
-                        self._launched(launch(appimage))
+                        launched = self._launched(launch(appimage))
                         return
                 binary = build_source(
                     self.cfg,
@@ -748,12 +772,14 @@ class LauncherWindow(Adw.ApplicationWindow):
                     log_cb=self._append_log,
                     commit=commit,
                 )
-                launch(binary)
+                launched = self._launched(launch(binary))
         except Exception as e:
             self._set_status(f"Error: {e}", sticky=True)
         finally:
             self._set_busy(False)
             GLib.idle_add(self.progress.set_fraction, 0.0)
+            if not self.auto and launched:
+                GLib.idle_add(self._refresh_versions)
             if self.auto:
 
                 def _quit():

@@ -378,6 +378,39 @@ def release_platforms(cfg_or_project):
     return {"linux": has_linux, "windows": has_windows}
 
 
+def source_version_entries(commits, have=None, installed_sha=None, installed_present=False):
+    """Build (labels, shas, subs, latest_sha) for the source version list.
+
+    The installed commit gets a ticked row even when it has scrolled out
+    of the fetched window, so the current build is always marked.
+    latest_sha is the newest upstream commit (before the installed row),
+    for the "Latest" tick and update tracking.
+    """
+    have = set(have or [])
+    labels, shas, subs = [], [], []
+    for c in commits or []:
+        sha = c.get("sha") if isinstance(c, dict) else None
+        if not sha and isinstance(c, dict):
+            sha = c.get("id")
+        if not sha:
+            continue
+        shas.append(sha)
+        msg = ""
+        if isinstance(c, dict):
+            commit = c.get("commit", {})
+            msg = commit.get("message", "") if isinstance(commit, dict) else ""
+        first = msg.splitlines()[0] if msg else ""
+        tick = "✓ " if sha in have else ""
+        labels.append(f"{tick}{sha[:7]} {first[:70]}")
+        subs.append(f"{sha}\n{msg.strip()}" if msg else sha)
+    latest_sha = shas[0] if shas else None
+    if installed_sha and installed_sha not in shas and installed_present:
+        shas.insert(0, installed_sha)
+        labels.insert(0, f"✓ {installed_sha[:7]} (installed build)")
+        subs.insert(0, f"{installed_sha}\nCurrently installed build")
+    return labels, shas, subs, latest_sha
+
+
 def list_commits(cfg, limit=15):
     info = project_info(cfg)
     branch = info.get("branch", "master")

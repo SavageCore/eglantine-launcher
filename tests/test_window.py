@@ -372,6 +372,18 @@ def test_launched_returns_false_without_proc(needs_display, fake_home):
         window.close()
 
 
+def test_version_tick_markup_only_installed_is_green():
+    from eglantine_launcher.ui.window import version_tick_markup
+
+    assert version_tick_markup("✓ be71c42 (installed build)").startswith('<span color="#4ade80">✓</span>')
+    assert version_tick_markup("✓ build-120 (installed)").startswith('<span color="#4ade80">✓</span>')
+    assert version_tick_markup("✓ build-110 some title") is None
+    assert version_tick_markup("Latest ✓") is None
+    assert version_tick_markup("plain row") is None
+    # markup escapes the label text
+    assert "&lt;" in version_tick_markup("✓ abc <x> (installed build)")
+
+
 def test_branch_row_search_is_wired(needs_display, fake_home):
     """The branch search entry needs an expression or it shows but never filters."""
     from gi.repository import Gtk
