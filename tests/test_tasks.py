@@ -34,7 +34,24 @@ def test_infer_releases_url():
         infer_releases_url("https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork.git")
         == "https://git.eden-emu.dev/api/v1/repos/Franseven/PokeDinner-a-Eglantine-Fork/releases"
     )
+    assert (
+        infer_releases_url("https://forge.example.com/o/r.git")
+        == "https://forge.example.com/api/v1/repos/o/r/releases"
+    )
     assert infer_releases_url("not a url") is None
+    assert infer_releases_url("") is None
+
+
+def test_forgejo_api_base_derives_host():
+    from eglantine_launcher.tasks import _forgejo_api_base
+
+    assert _forgejo_api_base("https://git.eden-emu.dev/o/r.git") == "https://git.eden-emu.dev/api/v1"
+    assert _forgejo_api_base("https://forge.example.com/o/r.git") == "https://forge.example.com/api/v1"
+    assert _forgejo_api_base("http://192.168.1.5:3000/o/r.git") == "http://192.168.1.5:3000/api/v1"
+    assert _forgejo_api_base("git@forge.example.com:o/r.git") == "https://forge.example.com/api/v1"
+    assert _forgejo_api_base("not a url") is None
+    assert _forgejo_api_base("") is None
+    assert _forgejo_api_base(None) is None
 
 
 def _releases():
@@ -498,6 +515,60 @@ def test_release_commit_map_forgejo_uses_real_host(monkeypatch):
     assert _release_commit_map({}, project) == {"build-7": "abc123"}
     assert len(seen) == 1
     assert seen[0].startswith("https://git.eden-emu.dev/api/v1/repos/Franseven/")
+
+
+def test_forgejo_calls_use_url_host(monkeypatch):
+    import urllib.request
+
+    from conftest import FakeResponse
+
+    from eglantine_launcher import tasks
+
+    seen = []
+
+    def fake(url_or_req, timeout=None):
+        url = url_or_req.full_url if hasattr(url_or_req, "full_url") else url_or_req
+        seen.append(url)
+        if "/branches" in url:
+            return FakeResponse([{"name": "master", "commit": {}}])
+        if "/tags" in url:
+            return FakeResponse([{"name": "build-7", "commit": {"sha": "abc123"}}])
+        if "/commits" in url:
+            return FakeResponse([{"sha": "abc123", "commit": {"message": "m"}}])
+        return FakeResponse({"name": "r", "default_branch": "master"})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    url = "https://forge.example.com/o/r.git"
+    cfg = {
+        "project": "t",
+        "projects": [{"id": "t", "source_url": url, "branch": "master"}],
+    }
+    assert tasks.list_commits(cfg)[0]["sha"] == "abc123"
+    assert tasks.list_branches(url, cfg={}) == ["master"]
+    assert tasks._release_commit_map(cfg, {"source_url": url}) == {"build-7": "abc123"}
+    assert tasks.fetch_repo_info(url, {}) == {"name": "r", "default_branch": "master"}
+    assert seen
+    assert all(u.startswith("https://forge.example.com/api/v1/") for u in seen)
+
+
+def test_bad_source_url_makes_no_api_call(monkeypatch):
+    import urllib.request
+
+    from eglantine_launcher import tasks
+
+    def fake(url_or_req, timeout=None):
+        raise AssertionError(f"no network expected: {url_or_req}")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    cfg = {
+        "project": "t",
+        "projects": [{"id": "t", "source_url": "not a url", "branch": "master"}],
+    }
+    assert tasks.list_commits(cfg) == []
+    assert tasks.list_branches("not a url", cfg={}) == []
+    assert tasks._release_commit_map(cfg, {"source_url": "not a url"}) == {}
+    assert tasks.fetch_repo_info("not a url", {}) == {}
+    assert tasks.infer_releases_url("not a url") is None
 
 
 def test_parse_branch_timestamp():

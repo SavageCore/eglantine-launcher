@@ -156,15 +156,42 @@ def parse_repo(source_url):
     return None, None, None
 
 
+def _forgejo_api_base(source_url):
+    """Return the Forgejo API base (scheme://host/api/v1) for a repo URL.
+
+    The host always comes from the URL itself. Unparseable URLs return
+    None and callers must skip the API call. Never guess a host.
+    """
+    s = (source_url or "").strip().rstrip("/")
+    if s.endswith(".git"):
+        s = s[:-4]
+    try:
+        parts = urllib.parse.urlsplit(s)
+    except Exception:
+        parts = None
+    if parts is not None and parts.scheme in ("http", "https") and parts.hostname:
+        host = parts.hostname.lower()
+        if parts.port:
+            host = f"{host}:{parts.port}"
+        return f"{parts.scheme}://{host}/api/v1"
+    # scp-style: [user@]host:owner/repo
+    tail = s.rsplit("@", 1)[-1]
+    host, sep, path = tail.partition(":")
+    if sep and host and "/" in path and " " not in host:
+        return f"https://{host.lower()}/api/v1"
+    return None
+
+
 def infer_releases_url(source_url):
     host, owner, repo = parse_repo(source_url)
     if not owner or not repo:
         return None
     if host == "github":
         return f"https://api.github.com/repos/{owner}/{repo}/releases"
-    if host == "forgejo" or "git.eden-emu.dev" in (source_url or ""):
-        return f"https://git.eden-emu.dev/api/v1/repos/{owner}/{repo}/releases"
-    return None
+    base = _forgejo_api_base(source_url)
+    if base is None:
+        return None
+    return f"{base}/repos/{owner}/{repo}/releases"
 
 
 def fetch_repo_info(source_url, cfg=None):
@@ -174,10 +201,11 @@ def fetch_repo_info(source_url, cfg=None):
         return {}
     if host == "github":
         url = f"https://api.github.com/repos/{owner}/{repo}"
-    elif host == "forgejo" or "git.eden-emu.dev" in (source_url or ""):
-        url = f"https://git.eden-emu.dev/api/v1/repos/{owner}/{repo}"
     else:
-        return {}
+        base = _forgejo_api_base(source_url)
+        if base is None:
+            return {}
+        url = f"{base}/repos/{owner}/{repo}"
     try:
         data = api_get_json(url, cfg, timeout=20)
         return data if isinstance(data, dict) else {}
@@ -322,10 +350,11 @@ def list_branches(source_url, limit=100, cfg=None):
     page_size = min(max(int(limit or 100), 1), 100)
     if host == "github":
         url = f"https://api.github.com/repos/{owner}/{repo}/branches?per_page={page_size}"
-    elif host == "forgejo" or "git.eden-emu.dev" in (source_url or ""):
-        url = f"https://git.eden-emu.dev/api/v1/repos/{owner}/{repo}/branches?limit={page_size}"
     else:
-        return []
+        base = _forgejo_api_base(source_url)
+        if base is None:
+            return []
+        url = f"{base}/repos/{owner}/{repo}/branches?limit={page_size}"
     data = _fetch_all_pages(url, cfg, page_size=page_size)
     names = []
     dates = {}
@@ -417,15 +446,17 @@ def source_version_entries(commits, have=None, installed_sha=None, installed_pre
 def list_commits(cfg, limit=15):
     info = project_info(cfg)
     branch = info.get("branch", "master")
-    host, owner, repo = parse_repo(info.get("source_url", ""))
+    source_url = info.get("source_url", "")
+    host, owner, repo = parse_repo(source_url)
     if not owner or not repo:
         return []
-    url = f"https://api.github.com/repos/{owner}/{repo}/commits?sha={branch}&per_page={limit}"
-    # forgejo uses different API path
-    if host == "forgejo" or "git.eden-emu.dev" in info.get("source_url", ""):
-        # Forgejo API
-        owner_repo = info["source_url"].split("git.eden-emu.dev/")[1].rstrip(".git")
-        url = f"https://git.eden-emu.dev/api/v1/repos/{owner_repo}/commits?sha={branch}&limit={limit}"
+    if host == "github":
+        url = f"https://api.github.com/repos/{owner}/{repo}/commits?sha={branch}&per_page={limit}"
+    else:
+        base = _forgejo_api_base(source_url)
+        if base is None:
+            return []
+        url = f"{base}/repos/{owner}/{repo}/commits?sha={branch}&limit={limit}"
     data = api_get_json(url, cfg, timeout=30)
     if isinstance(data, dict):
         data = data.get("commits") or data.get("data") or []
@@ -483,10 +514,11 @@ def _release_commit_map(cfg, project):
         return {}
     if host == "github":
         url = f"https://api.github.com/repos/{owner}/{repo}/tags?per_page=100"
-    elif host == "forgejo" or "git.eden-emu.dev" in source_url:
-        url = f"https://git.eden-emu.dev/api/v1/repos/{owner}/{repo}/tags?limit=100"
     else:
-        url = f"https://{host}/api/v1/repos/{owner}/{repo}/tags?limit=100"
+        base = _forgejo_api_base(source_url)
+        if base is None:
+            return {}
+        url = f"{base}/repos/{owner}/{repo}/tags?limit=100"
     try:
         tags = api_get_json(url, cfg, timeout=20)
     except Exception:
