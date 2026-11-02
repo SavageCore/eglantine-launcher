@@ -40,8 +40,9 @@ cp "$ROOT/data/icons/eglantine-launcher.png" \
   "$APPDIR/usr/share/icons/hicolor/256x256/apps/eglantine-launcher.png"
 cp "$ROOT/data/icons/eglantine-launcher.svg" \
   "$APPDIR/usr/share/icons/hicolor/scalable/apps/eglantine-launcher.svg"
-export APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64
-appimagetool-x86_64.AppImage "$APPDIR" "$OUT" 2>/dev/null \
+export APPIMAGE_EXTRACT_AND_RUN=1 ARCH="${ARCH:-x86_64}"
+APPIMAGETOOL="${APPIMAGETOOL:-appimagetool-x86_64.AppImage}"
+"$APPIMAGETOOL" "$APPDIR" "$OUT" 2>/dev/null \
   || "$HOME/.local/bin/appimage-tools/appimagetool-x86_64.AppImage" "$APPDIR" "$OUT"
 chmod +x "$OUT"
 echo "wrote $OUT"

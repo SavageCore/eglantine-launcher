@@ -87,5 +87,6 @@ python3 -m eglantine_launcher  # then click Install Shortcut
 
 ## Downloads
 
-Tagged releases ship PyInstaller builds for Linux and Windows
-(see `.github/workflows/release.yml`).
+Tagged releases ship a Windows PyInstaller build plus Linux
+AppImage, .deb, .rpm, and Flatpak (see `.github/workflows/release.yml`).
+The AppImage needs Python 3.10+, GTK 4, and libadwaita on the host.
