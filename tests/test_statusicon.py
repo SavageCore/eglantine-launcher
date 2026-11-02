@@ -63,76 +63,110 @@ class FakeWatcher:
             invocation.return_error_literal(Gio.dbus_error_quark(), Gio.DBusError.UNKNOWN_METHOD, method)
 
 
+def _bus_address(session_bus):
+    """Session bus address for extra connections.
+
+    Gio.bus_get_sync works even when DBUS_SESSION_BUS_ADDRESS is unset
+    (autolaunch via XDG_RUNTIME_DIR/bus or dbus-launch), but
+    new_for_address_sync needs the address string, so reconstruct it
+    from the live connection's socket as a fallback.
+    Returns None when it cannot be determined.
+    """
+    import os
+
+    addr = os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+    if not addr:
+        try:
+            stream = session_bus.get_stream()
+            if isinstance(stream, Gio.SocketConnection):
+                ra = stream.get_remote_address()
+                if isinstance(ra, Gio.UnixSocketAddress):
+                    atype = ra.get_address_type()
+                    if atype == Gio.UnixSocketAddressType.PATH:
+                        addr = "unix:path=" + ra.get_path()
+                    elif atype == Gio.UnixSocketAddressType.ABSTRACT:
+                        addr = "unix:abstract=" + ra.get_path()
+        except Exception:
+            addr = None
+    return addr or None
+
+
 @pytest.fixture()
 def watcher(session_bus):
     if _watcher_present(session_bus):
         yield None
         return
-    import os
-
-    # Own connection, like a real watcher process. Sharing session_bus
-    # deadlocks _show's blocking Register call on some GLib versions:
-    # the handler never gets dispatched and call_sync times out.
-    addr = os.environ.get("DBUS_SESSION_BUS_ADDRESS")
     import sys
+    import threading
 
-    if not addr:
-        print("watcher: no DBUS_SESSION_BUS_ADDRESS", file=sys.stderr)
+    # Like a real watcher process: own connection dispatched by its own
+    # MainLoop in a helper thread. Without a running loop the Register
+    # handler never runs and _show's blocking call times out.
+    addr = _bus_address(session_bus)
+    if addr is None:
+        print("watcher: cannot determine bus address", file=sys.stderr)
         yield None
         return
-    try:
-        wconn = Gio.DBusConnection.new_for_address_sync(
-            addr,
-            Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
-            None,
-            None,
-        )
-    except Exception:
-        yield None
-        return
-    try:
-        owned = wconn.call_sync(
-            "org.freedesktop.DBus",
-            "/org/freedesktop/DBus",
-            "org.freedesktop.DBus",
-            "RequestName",
-            GLib.Variant("(su)", (statusicon.WATCHER, 0)),
-            GLib.VariantType.new("(u)"),
-            Gio.DBusCallFlags.NONE,
-            -1,
-            None,
-        )
-        print(f"watcher: RequestName owned={owned[0]}", file=sys.stderr)
-        if owned[0] != 1:
-            yield None
-            return
-    except Exception:
-        import traceback
+    box = {}
+    ready = threading.Event()
 
-        traceback.print_exc()
+    def _run():
+        loop = GLib.MainLoop()
+        box["loop"] = loop
+        try:
+            wconn = Gio.DBusConnection.new_for_address_sync(
+                addr,
+                Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT
+                | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
+                None,
+                None,
+            )
+            owned = wconn.call_sync(
+                "org.freedesktop.DBus",
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus",
+                "RequestName",
+                GLib.Variant("(su)", (statusicon.WATCHER, 0)),
+                GLib.VariantType.new("(u)"),
+                Gio.DBusCallFlags.NONE,
+                -1,
+                None,
+            )
+            print(f"watcher: RequestName owned={owned[0]}", file=sys.stderr)
+            if owned[0] != 1:
+                box["error"] = f"RequestName owned={owned[0]}"
+                return
+            box["wconn"] = wconn
+            box["fake"] = FakeWatcher(wconn)
+        except Exception as e:  # noqa: BLE001
+            import traceback
+
+            traceback.print_exc()
+            box["error"] = e
+        finally:
+            ready.set()
+        if "error" not in box:
+            loop.run()
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    if not ready.wait(10):
+        print("watcher: helper thread did not start", file=sys.stderr)
         yield None
         return
-    fake = FakeWatcher(wconn)
-    yield fake
+    if "error" in box or "fake" not in box:
+        yield None
+        return
+    yield box["fake"]
     try:
-        wconn.call_sync(
-            "org.freedesktop.DBus",
-            "/org/freedesktop/DBus",
-            "org.freedesktop.DBus",
-            "ReleaseName",
-            GLib.Variant("(s)", (statusicon.WATCHER,)),
-            None,
-            Gio.DBusCallFlags.NONE,
-            -1,
-            None,
-        )
+        box["loop"].quit()
     except Exception:
         pass
-    finally:
-        try:
-            wconn.close_sync(None)
-        except Exception:
-            pass
+    thread.join(10)
+    try:
+        box["wconn"].close_sync(None)
+    except Exception:
+        pass
 
 
 class BusClient:
@@ -195,14 +229,14 @@ def _u(value):
 
 
 def test_tray_icon_registers_and_activates(session_bus, watcher, tmp_path, monkeypatch):
-    import os
-
     shown, quit = [], []
     handle = statusicon.show_tray_icon(
         lambda: shown.append(True), lambda: quit.append(True), icon_path=_make_icon(tmp_path)
     )
     assert handle is not None
-    client = BusClient(os.environ["DBUS_SESSION_BUS_ADDRESS"])
+    addr = _bus_address(session_bus)
+    assert addr is not None, "cannot determine session bus address"
+    client = BusClient(addr)
     try:
         if watcher is not None:
             assert len(watcher.services) == 1
