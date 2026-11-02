@@ -5,9 +5,10 @@
 After finishing work, rebuild `~/eglantine-launcher.AppImage` from the working tree:
 
 ```sh
-env -u APPDIR bash packaging/build-appimage.sh
+make appimage
 ```
 
+This runs `packaging/build-appimage.sh` with a clean environment.
 `env -u APPDIR` is required, not optional. This session inherits
 `APPDIR=/tmp/.mount_*` from the host AppImage runtime, and the script's
 `${APPDIR:-/tmp/opencode/launcher-appdir}` default resolves to that

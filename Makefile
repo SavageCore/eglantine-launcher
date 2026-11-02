@@ -1,4 +1,4 @@
-.PHONY: help lint format check test screenshot screenshots clean
+.PHONY: help lint format check test screenshot screenshots clean appimage
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -25,3 +25,6 @@ screenshots: ## Take light + dark screenshots of each page into docs/screenshots
 clean: ## Remove build artefacts
 	rm -rf build dist .pytest_cache
 	find . -name __pycache__ -type d -prune -exec rm -rf {} +
+
+appimage: ## Rebuild ~/eglantine-launcher.AppImage (quit the launcher first)
+	env -u APPDIR bash packaging/build-appimage.sh
