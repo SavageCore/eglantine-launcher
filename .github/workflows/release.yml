@@ -158,6 +158,26 @@ jobs:
           nfpm package --config packaging/nfpm.yaml --packager deb --target .
           nfpm package --config packaging/nfpm.yaml --packager rpm --target .
           ls -la ./*.deb ./*.rpm
+      - name: Sign RPM
+        env:
+          RPM_SIGNING_KEY: ${{ secrets.RPM_SIGNING_KEY }}
+        run: |
+          set -e
+          if [ -z "${RPM_SIGNING_KEY:-}" ]; then
+            echo "RPM_SIGNING_KEY is empty - leaving RPM unsigned (forks / local runs)."
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y rpm gnupg
+          printf '%s' "$RPM_SIGNING_KEY" | gpg --batch --import
+          cat > ~/.rpmmacros <<'EOF'
+          %_gpg_name Eglantine Launcher <eglantine-launcher@savagecore.github.io>
+          %__gpg_sign_cmd %{__gpg} gpg --force-v3-sigs --batch --no-verbose --no-armor --pinentry-mode loopback --passphrase '' --no-secmem-warning -u "%{_gpg_name}" -sbo %{__signature_filename} %{__plaintext_filename}
+          EOF
+          rpm --addsign ./*.rpm
+          echo "Verifying signatures:"
+          sudo rpm --import packaging/RPM-GPG-KEY-eglantine-launcher
+          rpm -K ./*.rpm
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -232,10 +252,12 @@ jobs:
           name: eglantine-launcher-flatpak
           path: artifacts/flatpak-bundle
       - name: Build apt/dnf/flatpak repos
+        env:
+          RPM_SIGNING_KEY: ${{ secrets.RPM_SIGNING_KEY }}
         run: |
           set -e
           sudo apt-get update
-          sudo apt-get install -y dpkg-dev createrepo-c flatpak ostree
+          sudo apt-get install -y dpkg-dev createrepo-c flatpak ostree gnupg rpm
           site=_site
           rm -rf "$site"
           mkdir -p "$site/apt" "$site/dnf"
@@ -243,6 +265,18 @@ jobs:
           cp artifacts/pkgs/*.rpm "$site/dnf/"
           (cd "$site/apt" && dpkg-scanpackages --multiversion . /dev/null | gzip -9c > Packages.gz)
           createrepo_c "$site/dnf"
+          if [ -n "${RPM_SIGNING_KEY:-}" ]; then
+            printf '%s' "$RPM_SIGNING_KEY" | gpg --batch --import
+            gpg --batch --yes --pinentry-mode loopback --passphrase '' \
+              --detach-sign --armor \
+              -u "Eglantine Launcher <eglantine-launcher@savagecore.github.io>" \
+              "$site/dnf/repodata/repomd.xml"
+          else
+            echo "WARNING: RPM_SIGNING_KEY is empty - repodata left unsigned."
+          fi
+          cp packaging/RPM-GPG-KEY-eglantine-launcher "$site/dnf/"
+          cp packaging/eglantine-launcher.repo "$site/dnf/"
+          ls -la "$site/dnf/" "$site/dnf/repodata/"
           ostree --repo="$site/flatpak" init --mode=archive-z2 || true
           flatpak build-import-bundle "$site/flatpak" \
             artifacts/flatpak-bundle/eglantine-launcher.flatpak
@@ -254,4 +288,4 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./_site
-          keep_files: true
+          keep_files: false
