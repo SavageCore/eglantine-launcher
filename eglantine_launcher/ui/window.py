@@ -739,6 +739,11 @@ class LauncherWindow(Adw.ApplicationWindow):
         """
         if proc is None or self.auto or _in_flatpak():
             return False
+        # The build/download is done and the emulator is running: stop the
+        # progress pulse now. proc.wait() blocks until the emulator exits,
+        # so leaving _busy set keeps the bar moving behind the hidden window.
+        self._set_busy(False)
+        GLib.idle_add(self.progress.set_fraction, 0.0)
         if not self._hidden_for_launch:
             return True
         try:
