@@ -395,10 +395,14 @@ class SettingsWindow(Adw.Window):
         self.token_entry.set_text(self.cfg.get("github_token", "") or "")
         self.token_entry.set_show_apply_button(True)
         self.token_entry.connect("apply", self._on_token_apply)
-        self.token_entry.connect("changed", self._on_token_changed)
         self._reveal_on_focus(self.token_entry)
-        self._verify_timer = None
         self.api_group.add(self.token_entry)
+        self._token_status_label = Gtk.Label(label="")
+        self._token_status_label.set_wrap(True)
+        self._token_status_label.set_xalign(0)
+        self._token_status_label.set_visible(False)
+        box.append(self._token_status_label)
+        self._token_status_seq = 0
         box.append(self.api_group)
 
         token_link = Gtk.LinkButton.new_with_label(
@@ -472,10 +476,13 @@ class SettingsWindow(Adw.Window):
         self.add_page = AddSourcePage(self._on_repo_next, cfg=self.cfg)
         self.stack.add_named(self.add_page, "add")
 
-        if self.cfg.get("github_token"):
-            self._set_token_status("Checking saved token...")
-            saved = self.cfg["github_token"]
-            threading.Thread(target=self._verify_token, args=(saved, False), daemon=True).start()
+        if self.cfg.get("github_token_rejected"):
+            # Never verified here: checking happens on save (Enter) and
+            # the rejected flag is set when real API use gets a 401.
+            self._set_token_status(
+                "Saved token was rejected by GitHub - check it and press Enter to re-verify.",
+                "error",
+            )
 
         toolbar_view = Adw.ToolbarView()
         toolbar_view.add_top_bar(toolbar)
@@ -535,11 +542,27 @@ class SettingsWindow(Adw.Window):
 
         DepsDialog(self, text, on_ignore=revert).present()
 
-    def _set_token_status(self, msg):
+    def _set_token_status(self, msg, kind="", timeout=0):
+        label = self._token_status_label
+        for cls in ("success", "warning", "error"):
+            label.remove_css_class(cls)
+        self._token_status_seq = getattr(self, "_token_status_seq", 0) + 1
+        seq = self._token_status_seq
+        if kind:
+            label.add_css_class(kind)
         if msg:
-            self.api_group.set_description(self._api_base_desc + "\n\nStatus: " + msg)
+            label.set_label(msg)
+            label.set_visible(True)
         else:
-            self.api_group.set_description(self._api_base_desc)
+            label.set_visible(False)
+            return
+        if timeout:
+            GLib.timeout_add_seconds(timeout, lambda: self._clear_token_status(seq))
+
+    def _clear_token_status(self, seq):
+        if getattr(self, "_token_status_seq", 0) == seq:
+            self._token_status_label.set_visible(False)
+        return False
 
     @staticmethod
     def _reveal_on_focus(row):
@@ -569,63 +592,45 @@ class SettingsWindow(Adw.Window):
         token = self.token_entry.get_text().strip()
         if not token:
             self.cfg["github_token"] = None
+            self.cfg.pop("github_token_rejected", None)
             save_config(self.cfg)
             self._set_token_status("")
             return
         self._set_token_status("Verifying...")
-        threading.Thread(target=self._verify_token, args=(token, True), daemon=True).start()
+        threading.Thread(target=self._verify_token, args=(token,), daemon=True).start()
 
-    def _on_token_changed(self, _row):
-        if self._verify_timer:
-            GLib.source_remove(self._verify_timer)
-        self._verify_timer = GLib.timeout_add(800, self._verify_typed_token)
-
-    def _verify_typed_token(self):
-        self._verify_timer = None
-        token = self.token_entry.get_text().strip()
-        if token and token != (self.cfg.get("github_token") or ""):
-            self._set_token_status("Verifying...")
-            threading.Thread(target=self._verify_token, args=(token, False), daemon=True).start()
-        return False
-
-    def _verify_token(self, token, save):
+    def _verify_token(self, token):
         from .. import tasks
 
         try:
             tasks.api_get_json("https://api.github.com/rate_limit", {"github_token": token}, timeout=20)
-            GLib.idle_add(self._token_verified, token, save)
+            GLib.idle_add(self._token_verified, token)
         except Exception as e:
-            GLib.idle_add(self._token_failed, token, e, save)
+            GLib.idle_add(self._token_failed, token, e)
 
-    def _token_verified(self, token, save):
+    def _token_verified(self, token):
         if self.token_entry.get_text().strip() != token:
             return
         from .. import tasks
 
         tasks.token_accepted()
-        if save:
-            self.cfg["github_token"] = token
-            save_config(self.cfg)
-            self._set_token_status("Verified and saved.")
-        elif token == (self.cfg.get("github_token") or ""):
-            self._set_token_status("Verified.")
-        else:
-            self._set_token_status("Looks valid - press Enter to save.")
+        self.cfg["github_token"] = token
+        self.cfg.pop("github_token_rejected", None)
+        save_config(self.cfg)
+        self._set_token_status("Verified and saved.", "success", timeout=8)
 
-    def _token_failed(self, token, error, save):
+    def _token_failed(self, token, error):
         if self.token_entry.get_text().strip() != token:
             return
         from urllib.error import HTTPError
 
         if isinstance(error, HTTPError) and error.code in (401, 403):
-            self._set_token_status("Invalid token - check it and try again.")
+            self._set_token_status("Invalid token - check it and try again.", "error")
         else:
             reason = getattr(error, "reason", error)
-            self._set_token_status(f"Could not verify ({reason}).")
-            if save:
-                self.cfg["github_token"] = token
-                save_config(self.cfg)
-                self._set_token_status(f"Could not verify ({reason}); saved anyway.")
+            self.cfg["github_token"] = token
+            save_config(self.cfg)
+            self._set_token_status(f"Could not verify ({reason}); saved anyway.", "warning")
 
     def _refresh(self):
         while True:

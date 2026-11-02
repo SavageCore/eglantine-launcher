@@ -625,3 +625,68 @@ def test_launch_now_hides_just_before_launch(needs_display, fake_home, monkeypat
         assert scheduled == []
     finally:
         window.close()
+
+
+def test_settings_open_does_not_verify_token(needs_display, fake_home, monkeypatch):
+    import urllib.request
+
+    from eglantine_launcher.config import load, save
+    from eglantine_launcher.ui.settings_window import SettingsWindow
+
+    cfg = load()
+    cfg["github_token"] = "saved-token"
+    cfg.pop("github_token_rejected", None)
+    save(cfg)
+
+    def no_network(url_or_req, timeout=None):
+        raise AssertionError("no API call expected on settings open")
+
+    monkeypatch.setattr(urllib.request, "urlopen", no_network)
+    window = SettingsWindow(None)
+    try:
+        assert window._token_status_label.get_visible() is False
+    finally:
+        window.close()
+
+
+def test_settings_open_warns_on_rejected_token(needs_display, fake_home, monkeypatch):
+    import urllib.request
+
+    from eglantine_launcher.config import load, save
+    from eglantine_launcher.ui.settings_window import SettingsWindow
+
+    cfg = load()
+    cfg["github_token"] = "saved-token"
+    cfg["github_token_rejected"] = True
+    save(cfg)
+
+    def no_network(url_or_req, timeout=None):
+        raise AssertionError("no API call expected on settings open")
+
+    monkeypatch.setattr(urllib.request, "urlopen", no_network)
+    window = SettingsWindow(None)
+    try:
+        label = window._token_status_label
+        assert label.get_visible() is True
+        assert "rejected" in label.get_label()
+    finally:
+        window.close()
+
+
+def test_token_status_timeout_keeps_newer_message(needs_display, fake_home):
+    from eglantine_launcher.ui.settings_window import SettingsWindow
+
+    window = SettingsWindow(None)
+    try:
+        window._set_token_status("Verified and saved.", "success", timeout=30)
+        seq = window._token_status_seq
+        assert window._token_status_label.get_visible() is True
+        # a stale timeout must not clear the newer message
+        window._set_token_status("Invalid token - check it and try again.", "error")
+        window._clear_token_status(seq)
+        assert window._token_status_label.get_visible() is True
+        assert "Invalid token" in window._token_status_label.get_label()
+        window._clear_token_status(window._token_status_seq)
+        assert window._token_status_label.get_visible() is False
+    finally:
+        window.close()

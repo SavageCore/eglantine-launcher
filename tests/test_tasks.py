@@ -335,6 +335,70 @@ def test_api_get_json_raises_other_errors(monkeypatch):
         tasks.api_get_json("https://x", {"github_token": "t"})
 
 
+def test_api_get_json_flags_rejected_saved_token(monkeypatch, fake_home):
+    import urllib.error
+    import urllib.request
+
+    from conftest import FakeResponse
+
+    import eglantine_launcher.tasks as tasks
+
+    tasks._token_rejected = False
+
+    def fake(url_or_req, timeout=None):
+        if not hasattr(fake, "n"):
+            fake.n = 0
+        fake.n += 1
+        if fake.n == 1:
+            raise urllib.error.HTTPError(str(url_or_req.full_url), 401, "x", {}, None)
+        return FakeResponse({"ok": True})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    cfg = {"projects": [], "github_token": "dead-token"}
+    assert tasks.api_get_json("https://x", cfg) == {"ok": True}
+    assert cfg["github_token_rejected"] is True
+    from eglantine_launcher.config import load
+
+    assert load()["github_token_rejected"] is True
+    tasks.token_accepted()
+
+
+def test_api_get_json_skips_flag_for_env_or_throwaway_cfg(monkeypatch, fake_home):
+    import urllib.error
+    import urllib.request
+
+    from conftest import FakeResponse
+
+    import eglantine_launcher.tasks as tasks
+
+    def fake(url_or_req, timeout=None):
+        if not hasattr(fake, "n"):
+            fake.n = 0
+        fake.n += 1
+        if fake.n == 1:
+            raise urllib.error.HTTPError(str(url_or_req.full_url), 401, "x", {}, None)
+        return FakeResponse({"ok": True})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+
+    # env token takes precedence: a 401 here says nothing about the saved one
+    tasks._token_rejected = False
+    monkeypatch.setenv("GITHUB_TOKEN", "env-token")
+    cfg = {"projects": [], "github_token": "saved-token"}
+    assert tasks.api_get_json("https://x", cfg) == {"ok": True}
+    assert "github_token_rejected" not in cfg
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    # throwaway dicts (verification probes) must never touch the config file
+    tasks._token_rejected = False
+    fake.n = 0
+    probe = {"github_token": "probe-token"}
+    assert tasks.api_get_json("https://x", probe) == {"ok": True}
+    assert "github_token_rejected" not in probe
+    tasks.token_accepted()
+
+
 def test_merge_remote_sources_adds_and_updates(fake_home):
     from eglantine_launcher.config import merge_remote_sources
 

@@ -37,6 +37,23 @@ def api_get_json(url, cfg=None, timeout=30):
         if e.code != 401 or _token_rejected or "Authorization" not in dict(req.header_items()):
             raise
         _token_rejected = True
+        # The token in use was rejected: flag it on real configs so
+        # Settings can warn instead of re-verifying on every open.
+        # Env tokens take precedence over the saved one, so only flag
+        # the saved token when no env token was in play. The "projects"
+        # check keeps throwaway dicts (e.g. verification probes) from
+        # ever touching the config file.
+        try:
+            if (
+                isinstance(cfg, dict)
+                and "projects" in cfg
+                and cfg.get("github_token")
+                and not os.environ.get("GITHUB_TOKEN")
+            ):
+                cfg["github_token_rejected"] = True
+                save_config(cfg)
+        except Exception:
+            pass
         req = urllib.request.Request(url, headers=_api_headers(cfg))
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
