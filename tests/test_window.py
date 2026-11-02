@@ -407,10 +407,11 @@ def test_branch_row_search_is_wired(needs_display, fake_home):
         try:
             assert dialog.branch_row.get_enable_search() is True
             assert dialog.branch_row.get_expression() is not None
-            if hasattr(dialog.branch_row, "get_property"):
-                assert (
-                    dialog.branch_row.get_property("search-match-mode") == Gtk.StringFilterMatchMode.SUBSTRING
-                )
+            # search-match-mode only exists on newer libadwaita
+            # (Ubuntu noble lacks it); mirror the source guard.
+            get_mode = getattr(dialog.branch_row, "get_search_match_mode", None)
+            if get_mode is not None:
+                assert get_mode() == Gtk.StringFilterMatchMode.SUBSTRING
         finally:
             dialog.close()
     finally:
