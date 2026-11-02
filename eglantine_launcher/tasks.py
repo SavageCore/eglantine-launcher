@@ -667,6 +667,136 @@ def remove_project_data(cfg, pid):
         pass
 
 
+def dir_size(path):
+    """Total file bytes under path (no symlink following). Missing dir -> 0."""
+    total = 0
+    try:
+        for root, _dirs, files in os.walk(path, followlinks=False):
+            for name in files:
+                try:
+                    total += os.lstat(os.path.join(root, name)).st_size
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
+
+
+def format_size(num):
+    """Human size for the Storage tab, e.g. '1.2 GiB'."""
+    n = float(max(int(num or 0), 0))
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if n < 1024 or unit == "TiB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+
+
+def project_storage(cfg, pid):
+    """Rows describing a project's on-disk data for the Storage tab.
+
+    Each row: kind ('release'|'source'), pid, label, detail, size
+    (bytes or None), path, in_use. in_use means the current launcher
+    mode launches this artifact: never offer to delete those.
+
+    Sizes walk the tree, so call this off the UI thread.
+    """
+    rows = []
+    if not pid:
+        return rows
+    in_release_use = pid == cfg.get("project") and cfg.get("mode", "release") == "release"
+    in_source_use = pid == cfg.get("project") and cfg.get("mode", "release") == "source"
+    install_base = cfg.get("install_dir")
+    if install_base:
+        app = Path(install_base) / pid / ("eglantine.exe" if is_windows() else "eglantine.AppImage")
+        if app.is_file():
+            try:
+                size = app.stat().st_size
+            except OSError:
+                size = None
+            tag = cfg.get("last_release_tag") if cfg.get("project") == pid else None
+            rows.append(
+                {
+                    "kind": "release",
+                    "pid": pid,
+                    "label": f"Release download{(' (' + tag + ')') if tag else ''}",
+                    "detail": str(app),
+                    "size": size,
+                    "path": str(app),
+                    "in_use": bool(in_release_use),
+                }
+            )
+    source_base = cfg.get("source_dir")
+    if source_base:
+        src = Path(source_base) / pid
+        if (src / ".git").is_dir():
+            try:
+                head = _host_check_output(
+                    ["git", "-C", str(src), "rev-parse", "--short", "HEAD"], text=True
+                ).strip()
+            except Exception:
+                head = ""
+            rows.append(
+                {
+                    "kind": "source",
+                    "pid": pid,
+                    "label": f"Source checkout{(' (' + head + ')') if head else ''}",
+                    "detail": str(src),
+                    "size": dir_size(src),
+                    "path": str(src),
+                    "in_use": bool(in_source_use),
+                }
+            )
+    return rows
+
+
+def delete_storage_row(cfg, row):
+    """Delete one project_storage row and fix up config. Returns error str or None.
+
+    Refuses in_use rows and paths outside the project data dirs.
+    Missing files count as success (config is still fixed up).
+    """
+    if row.get("in_use"):
+        return "That file is used by the current mode; switch modes first."
+    kind, pid = row.get("kind"), row.get("pid")
+    if kind == "release":
+        base = cfg.get("install_dir") or ""
+        target = Path(row.get("path") or "")
+        if not pid or target.parent != Path(base) / pid or target.parent.parent != Path(base):
+            return "Refusing: path is outside the project data dir."
+        try:
+            target.unlink(missing_ok=True)
+        except OSError as e:
+            return f"Could not delete: {e}"
+        if cfg.get("project") == pid and cfg.get("last_release_tag"):
+            cfg["downloaded_releases"] = [
+                t for t in cfg.get("downloaded_releases", []) if t != cfg["last_release_tag"]
+            ]
+            cfg["last_release_tag"] = None
+            save_config(cfg)
+        return None
+    if kind == "source":
+        base = cfg.get("source_dir") or ""
+        target = Path(row.get("path") or "")
+        if not pid or target != Path(base) / pid or target.parent != Path(base):
+            return "Refusing: path is outside the project data dir."
+        try:
+            head = _host_check_output(["git", "-C", str(target), "rev-parse", "HEAD"], text=True).strip()
+        except Exception:
+            head = ""
+        try:
+            if target.is_dir():
+                shutil.rmtree(target)
+        except OSError as e:
+            return f"Could not delete: {e}"
+        if head:
+            cfg["built_commits"] = [c for c in cfg.get("built_commits", []) if c != head]
+            if cfg.get("last_source_commit") == head:
+                cfg["last_source_commit"] = None
+            save_config(cfg)
+        return None
+    return "Unknown storage entry."
+
+
 def source_dir(cfg):
     return Path(cfg["source_dir"]) / cfg.get("project", "eglantine")
 

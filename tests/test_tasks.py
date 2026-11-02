@@ -571,6 +571,109 @@ def test_bad_source_url_makes_no_api_call(monkeypatch):
     assert tasks.infer_releases_url("not a url") is None
 
 
+def test_format_size_units():
+    from eglantine_launcher.tasks import format_size
+
+    assert format_size(0) == "0 B"
+    assert format_size(512) == "512 B"
+    assert format_size(2048) == "2.0 KiB"
+    assert format_size(3 * 1024**3) == "3.0 GiB"
+
+
+def _storage_cfg(tmp_path, **overrides):
+    install = tmp_path / "install"
+    source = tmp_path / "source"
+    install.mkdir()
+    source.mkdir()
+    cfg = {
+        "project": "eglantine",
+        "mode": "source",
+        "install_dir": str(install),
+        "source_dir": str(source),
+        "downloaded_releases": [],
+        "built_commits": [],
+        "last_release_tag": None,
+        "last_source_commit": None,
+    }
+    cfg.update(overrides)
+    return cfg
+
+
+def test_project_storage_lists_release_and_source(monkeypatch, tmp_path, fake_home):
+    import eglantine_launcher.tasks as tasks
+
+    cfg = _storage_cfg(tmp_path)
+    app = tmp_path / "install" / "eglantine" / "eglantine.AppImage"
+    app.parent.mkdir(parents=True)
+    app.write_bytes(b"x" * 100)
+    src = tmp_path / "source" / "eglantine"
+    (src / ".git").mkdir(parents=True)
+    (src / "big.bin").write_bytes(b"y" * 200)
+    monkeypatch.setattr(tasks, "_host_check_output", lambda *a, **k: "abc123def456\n")
+    rows = tasks.project_storage(cfg, "eglantine")
+    kinds = {r["kind"]: r for r in rows}
+    assert set(kinds) == {"release", "source"}
+    assert kinds["release"]["size"] == 100
+    assert kinds["release"]["in_use"] is False  # mode is source
+    assert kinds["source"]["in_use"] is True
+    assert kinds["source"]["size"] >= 200
+    assert "abc123d" in kinds["source"]["label"]
+
+
+def test_project_storage_hides_missing_and_unknown_project(monkeypatch, tmp_path, fake_home):
+    import eglantine_launcher.tasks as tasks
+
+    cfg = _storage_cfg(tmp_path)
+    monkeypatch.setattr(tasks, "_host_check_output", lambda *a, **k: "")
+    assert tasks.project_storage(cfg, "eglantine") == []
+    assert tasks.project_storage(cfg, "") == []
+    assert tasks.project_storage(cfg, None) == []
+
+
+def test_delete_storage_release_fixes_config(tmp_path, fake_home):
+    import eglantine_launcher.tasks as tasks
+
+    cfg = _storage_cfg(tmp_path, mode="source", last_release_tag="build-9", downloaded_releases=["build-9"])
+    app = tmp_path / "install" / "eglantine" / "eglantine.AppImage"
+    app.parent.mkdir(parents=True)
+    app.write_bytes(b"x")
+    rows = tasks.project_storage(cfg, "eglantine")
+    assert len(rows) == 1
+    assert tasks.delete_storage_row(cfg, rows[0]) is None
+    assert not app.exists()
+    assert cfg["last_release_tag"] is None
+    assert cfg["downloaded_releases"] == []
+
+
+def test_delete_storage_source_prunes_commit(monkeypatch, tmp_path, fake_home):
+    import eglantine_launcher.tasks as tasks
+
+    head = "a" * 40
+    cfg = _storage_cfg(tmp_path, mode="release", last_source_commit=head, built_commits=[head, "b" * 40])
+    src = tmp_path / "source" / "eglantine"
+    (src / ".git").mkdir(parents=True)
+    monkeypatch.setattr(tasks, "_host_check_output", lambda *a, **k: head + "\n")
+    rows = tasks.project_storage(cfg, "eglantine")
+    assert len(rows) == 1 and rows[0]["in_use"] is False
+    assert tasks.delete_storage_row(cfg, rows[0]) is None
+    assert not src.exists()
+    assert cfg["last_source_commit"] is None
+    assert cfg["built_commits"] == ["b" * 40]
+
+
+def test_delete_storage_refuses_in_use_and_outside_dirs(tmp_path, fake_home):
+    import eglantine_launcher.tasks as tasks
+
+    cfg = _storage_cfg(tmp_path, mode="release")
+    assert tasks.delete_storage_row(cfg, {"kind": "release", "in_use": True}) is not None
+    evil = tmp_path / "elsewhere.bin"
+    evil.write_bytes(b"x")
+    row = {"kind": "release", "pid": "eglantine", "path": str(evil), "in_use": False}
+    assert tasks.delete_storage_row(cfg, row) is not None
+    assert evil.exists()
+    assert tasks.delete_storage_row(cfg, {"kind": "bogus"}) is not None
+
+
 def test_parse_branch_timestamp():
     from eglantine_launcher.tasks import _parse_branch_timestamp
 

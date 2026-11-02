@@ -11,12 +11,15 @@ from gi.repository import Adw, GLib, Gtk
 from ..config import load as load_config
 from ..config import save as save_config
 from ..tasks import (
+    delete_storage_row,
     fetch_github_branch_dates,
     fetch_repo_name,
+    format_size,
     get_default_branch,
     infer_releases_url,
     list_branches,
     parse_repo,
+    project_storage,
     remove_project_data,
     should_fetch_branch_dates,
     sort_branch_names,
@@ -88,13 +91,15 @@ class AddSourcePage(Gtk.Box):
 class ProjectEditDialog(Adw.Window):
     """Step 2 (add) or full edit dialog. No ID field, branch is a dropdown."""
 
-    def __init__(self, parent, project=None, on_save=None, prefill=None, cfg=None):
+    def __init__(self, parent, project=None, on_save=None, prefill=None, cfg=None, on_storage_changed=None):
         super().__init__(transient_for=parent, modal=True, title="Edit source" if project else "New source")
         self.set_default_size(480, 420)
         self.on_save = on_save
+        self.on_storage_changed = on_storage_changed
         self.project = dict(project) if project else {}
         prefill = prefill or {}
         self._cfg = cfg or {}
+        self._pid = self.project.get("id")
         self._source_url = self.project.get("source_url", "") or prefill.get("source_url", "")
         self._default_branch = prefill.get("default_branch")
 
@@ -112,7 +117,9 @@ class ProjectEditDialog(Adw.Window):
         self.source_entry = Adw.EntryRow(title="Source URL")
         self.source_entry.set_text(self.project.get("source_url", prefill.get("source_url", "")))
         group.add(self.source_entry)
-        box.append(group)
+
+        settings_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        settings_page.append(group)
 
         group2 = Adw.PreferencesGroup()
         self.branch_row = Adw.ComboRow(title="Branch")
@@ -155,12 +162,38 @@ class ProjectEditDialog(Adw.Window):
         self.icon_entry = Adw.EntryRow(title="Icon URL (for desktop shortcut)")
         self.icon_entry.set_text(self.project.get("icon_url", "") or "")
         group2.add(self.icon_entry)
-        box.append(group2)
+        settings_page.append(group2)
 
         hint = Gtk.Label(label="Releases auto-fill from the repo link. Leave empty for source-only forks.")
         hint.set_wrap(True)
         hint.add_css_class("dim-label")
-        box.append(hint)
+        settings_page.append(hint)
+
+        if self._pid:
+            stack = Gtk.Stack()
+            stack.add_titled(settings_page, "settings", "Settings")
+            self._storage_group = Adw.PreferencesGroup(
+                title="On-disk data",
+                description="Delete downloads or checkouts you no longer need. "
+                "Entries used by the current mode cannot be deleted.",
+            )
+            storage_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            storage_page.append(self._storage_group)
+            self._storage_status = Gtk.Label(label="Loading…")
+            self._storage_status.add_css_class("dim-label")
+            self._storage_status.set_wrap(True)
+            storage_page.append(self._storage_status)
+            stack.add_titled(storage_page, "storage", "Storage")
+            switcher = Gtk.StackSwitcher()
+            switcher.set_stack(stack)
+            switcher.set_halign(Gtk.Align.CENTER)
+            box.append(switcher)
+            box.append(stack)
+            self._stack = stack
+            self._refresh_storage()
+        else:
+            box.append(settings_page)
+            self._stack = None
 
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         btn_box.set_halign(Gtk.Align.END)
@@ -174,6 +207,103 @@ class ProjectEditDialog(Adw.Window):
         box.append(btn_box)
 
         self.set_content(box)
+
+    def _refresh_storage(self):
+        self._storage_status.set_label("Loading…")
+
+        def worker():
+            try:
+                rows = project_storage(self._cfg, self._pid)
+            except Exception as e:  # never break the dialog on a stat failure
+                rows, err = [], str(e)
+            else:
+                err = ""
+            GLib.idle_add(self._render_storage, rows, err)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _clear_group(group):
+        child = group.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            group.remove(child)
+            child = nxt
+
+    def _render_storage(self, rows, err=""):
+        if getattr(self, "_storage_group", None) is None:
+            return False
+        self._clear_group(self._storage_group)
+        if err:
+            self._storage_status.set_label(f"Could not read storage: {err}")
+        elif not rows:
+            self._storage_status.set_label("Nothing downloaded or checked out for this source yet.")
+        else:
+            total = sum(r.get("size") or 0 for r in rows)
+            self._storage_status.set_label(
+                "Total: "
+                + format_size(total)
+                + ". Deleted data is re-downloaded or re-cloned on next launch."
+            )
+            for row in rows:
+                self._storage_group.add(self._storage_row(row))
+        return False
+
+    def _storage_row(self, row):
+        size = format_size(row.get("size")) if row.get("size") is not None else "unknown size"
+        action = Adw.ActionRow(title=row.get("label", ""), subtitle=f"{size} - {row.get('detail', '')}")
+        if row.get("in_use"):
+            badge = Gtk.Label(label="In use")
+            badge.add_css_class("dim-label")
+            badge.set_valign(Gtk.Align.CENTER)
+            action.add_suffix(badge)
+        else:
+            del_btn = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+            del_btn.add_css_class("flat")
+            del_btn.set_valign(Gtk.Align.CENTER)
+            del_btn.set_tooltip_text(f"Delete {row.get('label', '')}")
+            del_btn.connect("clicked", self._on_storage_delete_clicked, row)
+            action.add_suffix(del_btn)
+        return action
+
+    def _on_storage_delete_clicked(self, _btn, row):
+        dlg = Adw.MessageDialog(
+            transient_for=self,
+            modal=True,
+            heading=f"Delete {row.get('label', 'data')}?",
+            body=f"Removes {row.get('detail', '')}. The launcher re-downloads or re-clones it on next launch.",
+        )
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("delete", "Delete")
+        dlg.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_default_response("cancel")
+        dlg.set_close_response("cancel")
+
+        def on_response(_dlg, response):
+            if response == "delete":
+                self._delete_storage_row(row)
+            _dlg.close()
+
+        dlg.connect("response", on_response)
+        dlg.present()
+
+    def _delete_storage_row(self, row):
+        self._storage_status.set_label(f"Deleting {row.get('label', '')}…")
+
+        def worker():
+            err = delete_storage_row(self._cfg, row)
+            if err is None and self.on_storage_changed:
+                GLib.idle_add(self.on_storage_changed)
+            GLib.idle_add(self._after_storage_delete, err)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _after_storage_delete(self, err):
+        if err:
+            self._storage_status.set_label(err)
+        else:
+            self._refresh_storage()
+        return False
 
     def update_branches(self, branches):
         """Replace the dropdown model, preserving the selected branch name."""
@@ -574,7 +704,14 @@ class SettingsWindow(Adw.Window):
             prefill = {"branches": branches} if branches else {}
             if default_branch:
                 prefill["default_branch"] = default_branch
-            ProjectEditDialog(self, proj, save, prefill=prefill, cfg=self.cfg).present()
+            ProjectEditDialog(
+                self,
+                proj,
+                save,
+                prefill=prefill,
+                cfg=self.cfg,
+                on_storage_changed=self.on_changed,
+            ).present()
 
         def fetch():
             try:

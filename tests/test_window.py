@@ -508,3 +508,22 @@ def test_delete_button_cancel_keeps_project(needs_display, fake_home):
         assert proj["id"] in [p["id"] for p in window.cfg["projects"]]
     finally:
         window.close()
+
+
+def test_edit_dialog_storage_tab_only_for_existing_project(needs_display, fake_home):
+    from eglantine_launcher.ui.settings_window import ProjectEditDialog
+
+    cfg = {"projects": []}
+    proj = {"id": "eglantine", "name": "Eglantine", "source_url": "https://github.com/o/r.git"}
+    existing = ProjectEditDialog(None, proj, lambda *a: None, cfg=cfg)
+    try:
+        assert existing._stack is not None
+        assert existing._stack.get_child_by_name("settings") is not None
+        assert existing._stack.get_child_by_name("storage") is not None
+    finally:
+        existing.close()
+    new = ProjectEditDialog(None, None, lambda *a: None, cfg=cfg)
+    try:
+        assert new._stack is None
+    finally:
+        new.close()
