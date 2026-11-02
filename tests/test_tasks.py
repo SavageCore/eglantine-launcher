@@ -478,6 +478,28 @@ def test_find_release_for_commit_no_asset_falls_back_to_source(monkeypatch):
     assert find_release_for_commit(cfg, "a42b4d4c744e12ce5262648eee50daecd1ca456") is None
 
 
+def test_release_commit_map_forgejo_uses_real_host(monkeypatch):
+    import urllib.request
+
+    from conftest import FakeResponse
+
+    from eglantine_launcher.tasks import _release_commit_map
+
+    seen = []
+    tags = [{"name": "build-7", "commit": {"sha": "abc123"}}]
+
+    def fake(url_or_req, timeout=None):
+        url = url_or_req.full_url if hasattr(url_or_req, "full_url") else url_or_req
+        seen.append(url)
+        return FakeResponse(tags)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    project = {"source_url": "https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork.git"}
+    assert _release_commit_map({}, project) == {"build-7": "abc123"}
+    assert len(seen) == 1
+    assert seen[0].startswith("https://git.eden-emu.dev/api/v1/repos/Franseven/")
+
+
 def test_parse_branch_timestamp():
     from eglantine_launcher.tasks import _parse_branch_timestamp
 

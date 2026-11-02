@@ -477,11 +477,14 @@ def download(url, dest, progress_cb=None):
 
 def _release_commit_map(cfg, project):
     """Map release tag -> commit sha via the tags API (exact, no guessing)."""
-    host, owner, repo = parse_repo((project or {}).get("source_url", ""))
+    source_url = (project or {}).get("source_url", "")
+    host, owner, repo = parse_repo(source_url)
     if not owner or not repo:
         return {}
     if host == "github":
         url = f"https://api.github.com/repos/{owner}/{repo}/tags?per_page=100"
+    elif host == "forgejo" or "git.eden-emu.dev" in source_url:
+        url = f"https://git.eden-emu.dev/api/v1/repos/{owner}/{repo}/tags?limit=100"
     else:
         url = f"https://{host}/api/v1/repos/{owner}/{repo}/tags?limit=100"
     try:
