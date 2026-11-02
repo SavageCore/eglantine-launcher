@@ -54,7 +54,7 @@ def version_tick_markup(text):
 class LauncherWindow(Adw.ApplicationWindow):
     def __init__(self, app, auto=False):
         super().__init__(application=app, title="Eglantine Launcher")
-        self.set_default_size(640, 600)
+        self.set_default_size(640, -1)
         self.cfg = load_config()
         self.auto = auto
         self._busy = False
@@ -176,6 +176,13 @@ class LauncherWindow(Adw.ApplicationWindow):
         box.append(self.copy_btn)
 
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        btn_box.set_valign(Gtk.Align.END)
+        # Spacer absorbs any extra height when the window is resized taller,
+        # keeping the Launch row pinned to the bottom instead of leaving
+        # dead space below it.
+        spacer = Gtk.Box()
+        spacer.set_vexpand(True)
+        box.append(spacer)
         self.launch_btn = Gtk.Button(label="Launch")
         self.launch_btn.add_css_class("suggested-action")
         self.launch_btn.connect("clicked", self.on_launch)
