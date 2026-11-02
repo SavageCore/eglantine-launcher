@@ -11,6 +11,7 @@ from gi.repository import Adw, GLib, Gtk
 from ..config import load as load_config
 from ..config import save as save_config
 from ..tasks import fetch_repo_name, infer_releases_url, list_branches
+from ..tray import ASK_LABEL, CLOSE_CHOICES, LAUNCH_CHOICES
 
 
 def _slug(name):
@@ -222,6 +223,25 @@ class SettingsWindow(Adw.Window):
         build_group.add(self.source_row)
         box.append(build_group)
 
+        window_group = Adw.PreferencesGroup(title="Window")
+        self._launch_values = [None, *[v for v, _label in LAUNCH_CHOICES]]
+        self.launch_behavior_row = Adw.ComboRow(title="When launching a game")
+        self.launch_behavior_row.set_model(
+            Gtk.StringList.new([ASK_LABEL, *[label for _v, label in LAUNCH_CHOICES]])
+        )
+        self.launch_behavior_row.set_selected(self._launch_index(self.cfg.get("minimize_on_launch")))
+        self.launch_behavior_row.connect("notify::selected", self._on_launch_behavior_changed)
+        window_group.add(self.launch_behavior_row)
+        self._close_values = [None, *[v for v, _label in CLOSE_CHOICES]]
+        self.close_behavior_row = Adw.ComboRow(title="When closing the launcher")
+        self.close_behavior_row.set_model(
+            Gtk.StringList.new([ASK_LABEL, *[label for _v, label in CLOSE_CHOICES]])
+        )
+        self.close_behavior_row.set_selected(self._close_index(self.cfg.get("close_behavior")))
+        self.close_behavior_row.connect("notify::selected", self._on_close_behavior_changed)
+        window_group.add(self.close_behavior_row)
+        box.append(window_group)
+
         lbl = Gtk.Label(label="Emulator sources")
         lbl.add_css_class("heading")
         lbl.set_xalign(0)
@@ -271,6 +291,20 @@ class SettingsWindow(Adw.Window):
         self.set_content(toolbar_view)
 
         self._refresh()
+
+    def _launch_index(self, value):
+        return self._launch_values.index(value) if value in self._launch_values else 0
+
+    def _close_index(self, value):
+        return self._close_values.index(value) if value in self._close_values else 0
+
+    def _on_launch_behavior_changed(self, row, _pspec):
+        self.cfg["minimize_on_launch"] = self._launch_values[row.get_selected()]
+        save_config(self.cfg)
+
+    def _on_close_behavior_changed(self, row, _pspec):
+        self.cfg["close_behavior"] = self._close_values[row.get_selected()]
+        save_config(self.cfg)
 
     def _on_source_toggle(self, row, _pspec):
         if getattr(self, "_toggling", False):

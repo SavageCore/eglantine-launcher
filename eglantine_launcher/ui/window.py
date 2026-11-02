@@ -12,6 +12,7 @@ from .. import __version__
 from ..config import load as load_config
 from ..config import save as save_config
 from ..tasks import (
+    _in_flatpak,
     _on_host,
     build_source,
     check_build_deps,
@@ -30,6 +31,8 @@ from ..tasks import (
     source_dir,
 )
 from ..tasks import arch as get_arch
+from ..tray import hide_to_tray, minimize_to_taskbar
+from ..tray import restore as restore_window
 from .deps_dialog import DepsDialog
 from .settings_window import SettingsWindow
 
@@ -46,6 +49,11 @@ class LauncherWindow(Adw.ApplicationWindow):
         self._version_subs = []
         self._launcher_update_url = None
         self._updating = False
+        self._force_quit = False
+        self._hidden_for_launch = False
+        self._tray_icon = None
+        self.connect("close-request", self._on_close_request)
+        self.connect("destroy", self._on_destroy)
 
         toolbar = Adw.HeaderBar()
         menu = Gio.Menu()
@@ -450,6 +458,51 @@ class LauncherWindow(Adw.ApplicationWindow):
     def on_launch(self, *_args):
         if self._busy:
             return
+        if self.cfg.get("minimize_on_launch") is None and not self.auto:
+            self._set_busy(True)
+            self._ask_launch_behavior()
+            return
+        self._apply_launch_behavior()
+        self._begin_launch()
+
+    def _ask_launch_behavior(self):
+        dialog = Adw.MessageDialog.new(
+            self,
+            "Minimize launcher?",
+            "Keep it out of the way while the emulator runs.",
+        )
+        dialog.add_response("taskbar", "Minimize to taskbar")
+        dialog.add_response("tray", "Hide to tray")
+        dialog.add_response("none", "Keep visible")
+        dialog.set_default_response("taskbar")
+        dialog.set_close_response("dismissed")
+        dialog.connect("response", self._on_launch_choice)
+        dialog.present()
+
+    def _on_launch_choice(self, dialog, resp):
+        dialog.close()
+        if resp in ("taskbar", "tray", "none"):
+            self.cfg["minimize_on_launch"] = resp
+            save_config(self.cfg)
+            self._apply_launch_behavior()
+        else:
+            # dismissed: minimize once without saving, but still launch
+            minimize_to_taskbar(self)
+        self._begin_launch()
+
+    def _apply_launch_behavior(self):
+        behavior = self.cfg.get("minimize_on_launch")
+        if behavior == "tray":
+            self._hidden_for_launch = True
+            self._hide_to_tray()
+        elif behavior == "none":
+            self._hidden_for_launch = False
+        else:
+            # "taskbar", or unset in --auto mode (minimize silently, don't prompt)
+            self._hidden_for_launch = True
+            minimize_to_taskbar(self)
+
+    def _begin_launch(self):
         info = self._current_info()
         self.cfg["project"] = info.get("id", self.cfg.get("project"))
         self.cfg["mode"] = self._mode_from_row()
@@ -461,6 +514,96 @@ class LauncherWindow(Adw.ApplicationWindow):
     def _auto_start(self):
         self.on_launch()
         return False
+
+    def _on_close_request(self, *_args):
+        if self.auto or getattr(self, "_force_quit", False):
+            return False
+        behavior = self.cfg.get("close_behavior")
+        if behavior == "tray":
+            self._hide_to_tray()
+            return True
+        if behavior == "quit":
+            return False
+        self._ask_close_behavior()
+        return True
+
+    def _ask_close_behavior(self):
+        dialog = Adw.MessageDialog.new(
+            self,
+            "Quit launcher?",
+            "You can hide it to the tray instead of quitting.",
+        )
+        dialog.add_response("quit", "Quit")
+        dialog.add_response("tray", "Hide to tray")
+        dialog.set_default_response("quit")
+        dialog.set_close_response("dismissed")
+        dialog.connect("response", self._on_close_choice)
+        dialog.present()
+
+    def _on_close_choice(self, dialog, resp):
+        dialog.close()
+        if resp == "tray":
+            self.cfg["close_behavior"] = "tray"
+            save_config(self.cfg)
+            self._hide_to_tray()
+        elif resp == "quit":
+            self.cfg["close_behavior"] = "quit"
+            save_config(self.cfg)
+            self._force_quit = True
+            self.close()
+        # dismissed: stay open, ask again next time
+
+    def _hide_to_tray(self):
+        hide_to_tray(self)
+        try:
+            from ..statusicon import show_tray_icon
+
+            self._drop_tray_icon()
+            self._tray_icon = show_tray_icon(
+                on_show=self.restore_from_tray,
+                on_quit=self._quit_from_tray,
+            )
+        except Exception:
+            self._tray_icon = None
+        try:
+            app = self.get_application()
+            if app is not None:
+                note = Gio.Notification.new("Eglantine Launcher")
+                note.set_body("Running in the background.")
+                note.add_button("Show", "app.show-window")
+                app.send_notification("tray-hidden", note)
+        except Exception:
+            pass
+
+    def _drop_tray_icon(self):
+        tray, self._tray_icon = self._tray_icon, None
+        if tray is not None:
+            try:
+                from ..statusicon import hide_tray_icon
+
+                hide_tray_icon(tray)
+            except Exception:
+                pass
+
+    def _quit_from_tray(self):
+        self._drop_tray_icon()
+        self._force_quit = True
+        self.close()
+
+    def _on_destroy(self, *_args):
+        self._drop_tray_icon()
+        self._hidden_for_launch = False
+
+    def restore_from_tray(self):
+        self._hidden_for_launch = False
+        self._drop_tray_icon()
+        try:
+            app = self.get_application()
+            if app is not None:
+                app.withdraw_notification("tray-hidden")
+        except Exception:
+            pass
+        restore_window(self)
 
     def _start_worker(self):
         self._set_busy(True)
@@ -525,6 +668,24 @@ class LauncherWindow(Adw.ApplicationWindow):
         done.wait(timeout=300)
         return choice["v"] == "download"
 
+    def _launched(self, proc):
+        """Wait for the emulator to exit, then restore the window if we hid it.
+
+        Returns True when something was launched. Runs on the worker thread.
+        Skipped for --auto (the app quits) and flatpak (the Popen handle is
+        the flatpak-spawn helper, which exits as soon as the host starts).
+        """
+        if proc is None or self.auto or _in_flatpak():
+            return False
+        if not self._hidden_for_launch:
+            return True
+        try:
+            proc.wait()
+        except Exception:
+            return True
+        GLib.idle_add(self.restore_from_tray)
+        return True
+
     def _worker(self):
         try:
             mode = getattr(self, "_launch_mode", self.cfg.get("mode", "release"))
@@ -545,7 +706,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                     status_cb=self._set_status,
                     tag=tag,
                 )
-                launch(appimage)
+                self._launched(launch(appimage))
             else:
                 if not self.cfg.get("source_enabled", True):
                     self._set_status("Source builds are hidden (Settings).")
@@ -568,7 +729,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                         log_cb=self._append_log,
                         commit=commit,
                     )
-                    launch(binary)
+                    self._launched(launch(binary))
                     return
                 tag = find_release_for_commit(self.cfg, resolved) if resolved else None
                 if tag:
@@ -579,7 +740,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                             status_cb=self._set_status,
                             tag=tag,
                         )
-                        launch(appimage)
+                        self._launched(launch(appimage))
                         return
                 binary = build_source(
                     self.cfg,

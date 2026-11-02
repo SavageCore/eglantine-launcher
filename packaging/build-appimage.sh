@@ -24,7 +24,7 @@ exec python3 -m eglantine_launcher "$@"
 EOF
 chmod +x "$APPDIR/usr/bin/eglantine-launcher"
 ln -sf usr/bin/eglantine-launcher "$APPDIR/AppRun"
-cat > "$APPDIR/usr/share/applications/eglantine-launcher.desktop" <<'EOF'
+cat > "$APPDIR/usr/share/applications/dev.savagecore.EglantineLauncher.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=Eglantine Launcher
@@ -34,7 +34,7 @@ Icon=eglantine-launcher
 Terminal=false
 Categories=Game;Emulator;
 EOF
-ln -sf usr/share/applications/eglantine-launcher.desktop "$APPDIR/eglantine-launcher.desktop"
+ln -sf usr/share/applications/dev.savagecore.EglantineLauncher.desktop "$APPDIR/dev.savagecore.EglantineLauncher.desktop"
 cp "$ROOT/data/icons/eglantine-launcher.png" "$APPDIR/eglantine-launcher.png"
 cp "$ROOT/data/icons/eglantine-launcher.png" \
   "$APPDIR/usr/share/icons/hicolor/256x256/apps/eglantine-launcher.png"

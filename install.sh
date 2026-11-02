@@ -3,7 +3,7 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DESKTOP_DIR="$HOME/.local/share/applications"
 mkdir -p "$DESKTOP_DIR"
-cat > "$DESKTOP_DIR/eglantine-launcher.desktop" <<EOF
+cat > "$DESKTOP_DIR/dev.savagecore.EglantineLauncher.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Eglantine Launcher

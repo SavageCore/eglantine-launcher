@@ -117,6 +117,9 @@ def main() -> int:
             self._auto = auto
             self.connect("activate", self._on_activate)
             self.connect("startup", self._on_startup)
+            show_action = Gio.SimpleAction.new("show-window", None)
+            show_action.connect("activate", self._on_show_window)
+            self.add_action(show_action)
 
         def _on_startup(self, _app):
             from pathlib import Path
@@ -137,7 +140,7 @@ def main() -> int:
         def _on_activate(self, app):
             if self._window is None:
                 self._window = LauncherWindow(app, auto=self._auto)
-            self._window.present()
+            self._window.restore_from_tray()
             if args.settings:
                 self._window.on_settings()
             if args.about:
@@ -146,6 +149,10 @@ def main() -> int:
                 from gi.repository import GLib
 
                 GLib.timeout_add_seconds(_quit_after, lambda: (app.quit(), False)[1])
+
+        def _on_show_window(self, *_args):
+            if self._window is not None:
+                self._window.restore_from_tray()
 
     app = App()
     return app.run(sys.argv[:1])

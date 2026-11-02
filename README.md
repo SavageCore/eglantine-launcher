@@ -26,6 +26,8 @@ and community forks such as [PokeDinner](https://git.eden-emu.dev/Franseven/Poke
 - Dependency check at startup with a copyable report; can hide source builds until deps are sorted
 - Install a desktop shortcut for one-click launching (`--auto`)
 - Self-update notification when a new launcher release exists
+- Minimizes on game launch and hides to the tray on close if you like
+  (asks the first time; change it in Settings)
 
 ## Run
 

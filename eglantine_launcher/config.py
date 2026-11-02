@@ -80,6 +80,11 @@ def default_config():
         "downloaded_releases": [],
         "built_commits": [],
         "hidden_sources": [],
+        # Window behavior. None means "ask on first use, then remember".
+        # minimize_on_launch: "taskbar" | "tray" | "none" | None
+        # close_behavior: "quit" | "tray" | None
+        "minimize_on_launch": None,
+        "close_behavior": None,
         "projects": [p.copy() for p in DEFAULT_PROJECTS],
     }
 

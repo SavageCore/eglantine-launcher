@@ -866,9 +866,10 @@ def _on_host(cmd):
 
 
 def launch(path):
+    """Start the emulator. Returns the child process, or None when unknown."""
     path = Path(path)
     if is_windows():
         os.startfile(str(path))
-        return
+        return None
     os.chmod(path, 0o755)
-    subprocess.Popen(_on_host([str(path)]), start_new_session=True)
+    return subprocess.Popen(_on_host([str(path)]), start_new_session=True)
