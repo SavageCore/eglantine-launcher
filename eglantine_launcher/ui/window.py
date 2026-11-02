@@ -150,15 +150,17 @@ class LauncherWindow(Adw.ApplicationWindow):
             GLib.timeout_add_seconds(3600, self._hourly_tick)
             GLib.timeout_add_seconds(60, self._initial_update_check)
 
-        self.status_label = Gtk.Label(label="")
-        self.status_label.set_wrap(True)
-        self.status_label.set_xalign(0)
-        self.status_label.set_selectable(True)
-        self.status_label.add_css_class("dim-label")
+        self.banner = Adw.Banner.new("")
+        self.banner.set_revealed(False)
+        self.banner.connect("button-clicked", self._on_banner_button)
+        self._banner_action = None
+
+        self.toast_overlay = Adw.ToastOverlay()
 
         self.progress = Gtk.ProgressBar()
+        self.progress.set_hexpand(True)
+        self.progress.set_valign(Gtk.Align.CENTER)
         self.progress.set_visible(False)
-        box.append(self.progress)
 
         self.log_view = Gtk.TextView()
         self.log_view.set_editable(False)
@@ -176,51 +178,38 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.copy_btn.set_halign(Gtk.Align.END)
         box.append(self.copy_btn)
 
-        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        btn_box.set_valign(Gtk.Align.END)
-        # Spacer absorbs any extra height when the window is resized taller,
-        # keeping the Launch row pinned to the bottom instead of leaving
-        # dead space below it.
-        spacer = Gtk.Box()
-        spacer.set_vexpand(True)
-        box.append(spacer)
         self.launch_btn = Gtk.Button(label="Launch")
         self.launch_btn.add_css_class("suggested-action")
         self.launch_btn.connect("clicked", self.on_launch)
-        btn_box.append(self.launch_btn)
 
         self.stop_btn = Gtk.Button(label="Stop")
         self.stop_btn.add_css_class("destructive-action")
         self.stop_btn.connect("clicked", self.on_stop_clicked)
         self.stop_btn.set_visible(False)
-        btn_box.append(self.stop_btn)
 
-        self.self_update_btn = Gtk.Button(label="Update Launcher")
-        self.self_update_btn.connect("clicked", self.on_self_update)
-        self.self_update_btn.set_visible(False)
-        btn_box.append(self.self_update_btn)
-
-        box.append(btn_box)
+        self.action_bar = Gtk.ActionBar()
+        self.action_bar.pack_start(self.progress)
+        # End group reads left-to-right: Stop then Launch keeps
+        # Launch rightmost as the primary action.
+        self.action_bar.pack_end(self.stop_btn)
+        self.action_bar.pack_end(self.launch_btn)
 
         # persist pgo choice immediately (project/mode persist via _on_selector_changed)
         self.pgo_row.connect("notify::active", lambda *_: self._save_choices())
 
-        # add header bar via toolbar view
-        # The status bar collapses when empty so it never leaves dead
-        # space below the Launch row; it appears only while a status
-        # message is shown.
-        self.status_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self.status_bar.set_margin_top(4)
-        self.status_bar.set_margin_bottom(4)
-        self.status_bar.set_margin_start(12)
-        self.status_bar.set_margin_end(12)
-        self.status_bar.append(self.status_label)
-        self.status_bar.set_visible(False)
-        self.status_label.connect("notify::label", self._on_status_label_changed)
+        # Banner sits edge-to-edge above the margined content; toasts
+        # overlay everything transiently; Launch lives in a proper
+        # bottom ActionBar instead of a hand-rolled button box.
+        box.set_vexpand(True)
+        content_wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content_wrap.append(self.banner)
+        content_wrap.append(box)
+        self.toast_overlay.set_child(content_wrap)
         toolbar_view = Adw.ToolbarView()
         toolbar_view.add_top_bar(toolbar)
-        toolbar_view.set_content(box)
-        toolbar_view.add_bottom_bar(self.status_bar)
+        toolbar_view.set_content(self.toast_overlay)
+        toolbar_view.add_bottom_bar(self.action_bar)
+        toolbar_view.set_bottom_bar_style(Adw.ToolbarStyle.RAISED)
         self.set_content(toolbar_view)
 
         if auto:
@@ -243,20 +232,47 @@ class LauncherWindow(Adw.ApplicationWindow):
         except Exception:
             pass
 
-    def _on_status_label_changed(self, label, _pspec):
-        self.status_bar.set_visible(bool(label.get_text()))
+    def _on_banner_button(self, *_args):
+        action, self._banner_action = self._banner_action, None
+        GLib.idle_add(self.banner.set_revealed, False)
+        if callable(action):
+            action()
+
+    def _reveal_banner(self, title, button_label="", action=None):
+        self.banner.set_title(title)
+        self.banner.set_button_label(button_label or "")
+        self._banner_action = action
+        self.banner.set_revealed(True)
+
+    def _show_banner(self, title, button_label="", action=None):
+        self._status_seq = getattr(self, "_status_seq", 0) + 1
+        GLib.idle_add(self._reveal_banner, title, button_label, action)
 
     def _set_status(self, text, sticky=False):
         self._status_seq = getattr(self, "_status_seq", 0) + 1
         seq = self._status_seq
-        GLib.idle_add(self.status_label.set_label, text)
-        if not sticky and text:
+        if sticky:
+            if text:
+                GLib.idle_add(self._reveal_banner, text)
+            else:
+                GLib.idle_add(self._hide_banner_if_seq, seq)
+        elif text:
+
+            def _toast():
+                toast = Adw.Toast.new(text)
+                toast.set_timeout(8)
+                self.toast_overlay.add_toast(toast)
+
+            GLib.idle_add(_toast)
             GLib.timeout_add_seconds(8, lambda: self._clear_status(seq))
 
-    def _clear_status(self, seq):
+    def _hide_banner_if_seq(self, seq):
         if getattr(self, "_status_seq", 0) == seq:
-            self.status_label.set_label("")
+            self.banner.set_revealed(False)
         return False
+
+    def _clear_status(self, seq):
+        return self._hide_banner_if_seq(seq)
 
     def _set_progress(self, frac):
         GLib.idle_add(self.progress.set_fraction, frac)
@@ -977,8 +993,11 @@ class LauncherWindow(Adw.ApplicationWindow):
                 if tag and tag != __version__ and tag > __version__:
                     html_url = data.get("html_url")
                     self._launcher_update_url = html_url
-                    GLib.idle_add(self.self_update_btn.set_visible, True)
-                    GLib.idle_add(self.status_label.set_label, f"Launcher update available: {tag}")
+                    self._show_banner(
+                        f"Launcher update available: {tag}",
+                        button_label="Open release",
+                        action=self.on_self_update,
+                    )
             except Exception:
                 pass
 
