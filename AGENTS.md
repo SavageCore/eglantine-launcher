@@ -16,3 +16,11 @@ read-only mount, so a bare run tries to `rm -rf` it and aborts.
 Never build to a `-new` suffixed file. If the build fails with
 `Text file busy`, the launcher is currently running: stop and tell the
 user to quit it, then rebuild in place.
+
+## Committing work
+
+Commit as you go: one commit per finished feature, straight on the
+working branch, with the suite and `ruff check` / `ruff format --check`
+green. Larger work goes on a feature branch; when done and tested it
+gets squashed and merged. Never batch unrelated features into a single
+end-of-session commit.
