@@ -36,6 +36,22 @@ def test_main_window_has_content(needs_display, fake_home):
         window.close()
 
 
+def test_main_window_restores_saved_size(needs_display, fake_home, monkeypatch):
+    from eglantine_launcher.config import load
+
+    app = _make_app()
+    window = LauncherWindow(app)
+    try:
+        assert window.get_default_size() == (640, -1)
+        monkeypatch.setattr(window, "get_width", lambda: 500)
+        monkeypatch.setattr(window, "get_height", lambda: 650)
+        window._save_window_size()
+        assert load()["window_width"] == 500
+        assert load()["window_height"] == 650
+    finally:
+        window.close()
+
+
 def test_stop_button_hidden_initially_and_destructive(needs_display, fake_home):
     window = LauncherWindow(_make_app())
     try:

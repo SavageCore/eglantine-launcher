@@ -85,6 +85,10 @@ def default_config():
         # close_behavior: "quit" | "tray" | None
         "minimize_on_launch": None,
         "close_behavior": None,
+        # Main window size; updated whenever the window closes or hides.
+        # Height None means hug content (the original default).
+        "window_width": 640,
+        "window_height": None,
         # The "Running in the background" notification only shows once.
         "tray_notice_shown": False,
         "projects": [p.copy() for p in DEFAULT_PROJECTS],

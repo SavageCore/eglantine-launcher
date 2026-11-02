@@ -54,8 +54,14 @@ def version_tick_markup(text):
 class LauncherWindow(Adw.ApplicationWindow):
     def __init__(self, app, auto=False):
         super().__init__(application=app, title="Eglantine Launcher")
-        self.set_default_size(640, -1)
         self.cfg = load_config()
+        try:
+            win_w = int(self.cfg.get("window_width") or 640)
+            win_h = self.cfg.get("window_height")
+            win_h = int(win_h) if win_h else -1
+        except (TypeError, ValueError):
+            win_w, win_h = 640, -1
+        self.set_default_size(win_w, win_h)
         self.auto = auto
         self._busy = False
         self._release_tags = []
@@ -669,7 +675,20 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.on_launch()
         return False
 
+    def _save_window_size(self):
+        # Wayland disallows positioning, but size is fine to remember.
+        try:
+            w, h = self.get_width(), self.get_height()
+        except Exception:
+            return
+        if w > 0 and h > 0:
+            self.cfg["window_width"] = w
+            self.cfg["window_height"] = h
+            save_config(self.cfg)
+
     def _on_close_request(self, *_args):
+        if not self.auto:
+            self._save_window_size()
         if self.auto or getattr(self, "_force_quit", False):
             return False
         behavior = self.cfg.get("close_behavior")
@@ -749,6 +768,8 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.close()
 
     def _on_destroy(self, *_args):
+        if not self.auto:
+            self._save_window_size()
         self._drop_tray_icon()
         self._hidden_for_launch = False
 
