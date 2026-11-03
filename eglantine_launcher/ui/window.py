@@ -915,6 +915,21 @@ class LauncherWindow(Adw.ApplicationWindow):
         self._last_fraction_time = time.monotonic()
         self._set_progress((downloaded / total) if total else 0.0)
 
+    def _note_git_fraction(self, frac):
+        """Determinate progress from git transfer output (0-1 float).
+
+        Runs on the worker thread; also stamps the pulse timer so the bar
+        holds the real fraction instead of pulsing during clone/fetch.
+        """
+        import time
+
+        self._last_fraction_time = time.monotonic()
+        try:
+            frac = float(frac)
+        except (TypeError, ValueError):
+            return
+        self._set_progress(min(max(frac, 0.0), 1.0))
+
     def _already_built(self, commit):
         src = source_dir(self.cfg)
         binary = src / "build" / "release" / "bin" / ("eglantine.exe" if is_windows() else "eglantine")
@@ -1031,6 +1046,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                         commit=resolved,
                         cancelled=self._cancel_event.is_set,
                         on_proc=self._set_build_proc,
+                        progress_cb=self._note_git_fraction,
                     )
                     launched = self._launch_now(binary)
                     return
@@ -1054,6 +1070,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                     commit=resolved,
                     cancelled=self._cancel_event.is_set,
                     on_proc=self._set_build_proc,
+                    progress_cb=self._note_git_fraction,
                 )
                 launched = self._launch_now(binary)
         except BuildCancelled:

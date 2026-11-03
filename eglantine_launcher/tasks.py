@@ -1158,41 +1158,66 @@ def check_release(cfg, progress_cb=None, status_cb=None, tag=None):
     return appimage
 
 
-def ensure_source(cfg, status_cb=None, commit=None, cancelled=None):
+def ensure_source(cfg, status_cb=None, commit=None, cancelled=None, log_cb=None, progress_cb=None):
     info = project_info(cfg)
     src = source_dir(cfg)
     src.parent.mkdir(parents=True, exist_ok=True)
     if is_pr_project(info):
-        return _ensure_pr_source(cfg, info, src, status_cb, commit, cancelled)
+        return _ensure_pr_source(cfg, info, src, status_cb, commit, cancelled, log_cb, progress_cb)
     if not (src / ".git").exists():
         if status_cb:
             status_cb("Cloning source...")
-        _host_run(["git", "clone", "--branch", info["branch"], info["source_url"], str(src)], check=True)
+        _run_logged(
+            ["git", "clone", "--progress", "--branch", info["branch"], info["source_url"], str(src)],
+            log_cb=log_cb,
+            cancelled=cancelled,
+            progress_cb=progress_cb,
+        )
     else:
         if status_cb:
             status_cb("Fetching source updates...")
-        _host_run(["git", "-C", str(src), "fetch", "origin", info["branch"]], check=True)
+        _run_logged(
+            ["git", "-C", str(src), "fetch", "--progress", "origin", info["branch"]],
+            log_cb=log_cb,
+            cancelled=cancelled,
+            progress_cb=progress_cb,
+        )
     if cancelled and cancelled():
         raise BuildCancelled("Build cancelled.")
     if commit:
-        _host_run(["git", "-C", str(src), "checkout", commit], check=True)
+        _run_logged(
+            ["git", "-C", str(src), "checkout", commit],
+            log_cb=log_cb,
+            cancelled=cancelled,
+            progress_cb=progress_cb,
+        )
     else:
-        _host_run(["git", "-C", str(src), "checkout", info["branch"]], check=True, capture_output=True)
-        _host_run(
+        _run_logged(
+            ["git", "-C", str(src), "checkout", info["branch"]],
+            log_cb=log_cb,
+            cancelled=cancelled,
+            progress_cb=progress_cb,
+        )
+        _run_logged(
             ["git", "-C", str(src), "pull", "--ff-only", "origin", info["branch"]],
+            log_cb=log_cb,
+            cancelled=cancelled,
+            progress_cb=progress_cb,
             check=False,
-            capture_output=True,
         )
     commit = _host_check_output(["git", "-C", str(src), "rev-parse", "HEAD"], text=True).strip()
     return src, commit
 
 
-def _ensure_pr_source(cfg, info, src, status_cb=None, commit=None, cancelled=None):
+def _ensure_pr_source(
+    cfg, info, src, status_cb=None, commit=None, cancelled=None, log_cb=None, progress_cb=None
+):
     """Checkout a PR head into its isolated source dir.
 
     Uses the base repo as origin and fetches the PR ref (refs/pull/N/head on
     both GitHub and Forgejo). Fork-head PRs work because the base repo
     exposes the pull ref; the head clone URL is never fetched directly.
+    Git transfer progress streams to the log via _run_logged.
     """
     number = info.get("pr_number")
     source_url = info.get("source_url")
@@ -1202,10 +1227,32 @@ def _ensure_pr_source(cfg, info, src, status_cb=None, commit=None, cancelled=Non
         number = int(number)
     except (TypeError, ValueError):
         raise RuntimeError("PR entry has an invalid number; edit it and try again.")
+
+    def _fetch_pr_ref():
+        fetched = False
+        for ref in (f"pull/{number}/head", f"pulls/{number}/head"):
+            try:
+                _run_logged(
+                    ["git", "-C", str(src), "fetch", "--progress", "origin", f"+{ref}:pr-{number}"],
+                    log_cb=log_cb,
+                    cancelled=cancelled,
+                    progress_cb=progress_cb,
+                )
+                fetched = True
+                break
+            except Exception:
+                continue
+        return fetched
+
     if not (src / ".git").exists():
         if status_cb:
             status_cb(f"Cloning PR #{number} base...")
-        _host_run(["git", "clone", source_url, str(src)], check=True)
+        _run_logged(
+            ["git", "clone", "--progress", source_url, str(src)],
+            log_cb=log_cb,
+            cancelled=cancelled,
+            progress_cb=progress_cb,
+        )
     else:
         if status_cb:
             status_cb(f"Fetching PR #{number} updates...")
@@ -1217,18 +1264,7 @@ def _ensure_pr_source(cfg, info, src, status_cb=None, commit=None, cancelled=Non
             current = ""
         if current and current != source_url:
             _host_run(["git", "-C", str(src), "remote", "set-url", "origin", source_url], check=True)
-        fetched = False
-        for ref in (f"pull/{number}/head", f"pulls/{number}/head"):
-            try:
-                _host_run(
-                    ["git", "-C", str(src), "fetch", "origin", f"+{ref}:pr-{number}"],
-                    check=True,
-                )
-                fetched = True
-                break
-            except Exception:
-                continue
-        if not fetched:
+        if not _fetch_pr_ref():
             raise RuntimeError(f"Could not fetch PR #{number} (is it still open?).")
     if not (src / ".git").exists():
         raise RuntimeError("PR clone failed.")
@@ -1236,23 +1272,17 @@ def _ensure_pr_source(cfg, info, src, status_cb=None, commit=None, cancelled=Non
     try:
         _host_check_output(["git", "-C", str(src), "rev-parse", "--verify", f"pr-{number}"], text=True)
     except Exception:
-        fetched = False
-        for ref in (f"pull/{number}/head", f"pulls/{number}/head"):
-            try:
-                _host_run(
-                    ["git", "-C", str(src), "fetch", "origin", f"+{ref}:pr-{number}"],
-                    check=True,
-                )
-                fetched = True
-                break
-            except Exception:
-                continue
-        if not fetched:
+        if not _fetch_pr_ref():
             raise RuntimeError(f"Could not fetch PR #{number} (is it still open?).")
     if cancelled and cancelled():
         raise BuildCancelled("Build cancelled.")
     target = commit or info.get("pr_head_sha") or f"pr-{number}"
-    _host_run(["git", "-C", str(src), "checkout", target], check=True)
+    _run_logged(
+        ["git", "-C", str(src), "checkout", target],
+        log_cb=log_cb,
+        cancelled=cancelled,
+        progress_cb=progress_cb,
+    )
     commit = _host_check_output(["git", "-C", str(src), "rev-parse", "HEAD"], text=True).strip()
     return src, commit
 
@@ -1369,8 +1399,107 @@ def _stream_proc(proc, log_cb=None, cancelled=None, on_proc=None):
                 pass
 
 
-def build_source(cfg, status_cb=None, log_cb=None, commit=None, cancelled=None, on_proc=None):
-    src, commit = ensure_source(cfg, status_cb, commit=commit, cancelled=cancelled)
+def _git_progress_fraction(line):
+    """Determinate fraction from a git transfer progress line, or None.
+
+    Only the local phases drive the bar: Receiving maps to 0-90% and
+    Resolving deltas to 90-100%. Remote-side phases (Counting/Compressing)
+    return None so the bar never jumps backwards between phases.
+    """
+    import re
+
+    m = re.search(
+        r"(?:remote:\s*)?(Receiving objects|Resolving deltas)[^\d]*(\d+)%(?:\s*\((\d+)/(\d+)\))?",
+        line,
+    )
+    if not m:
+        return None
+    phase, pct, done, total = m.group(1), int(m.group(2)), m.group(3), m.group(4)
+    if done is not None and total is not None and int(total) > 0:
+        frac = int(done) / int(total)
+    else:
+        frac = pct / 100.0
+    frac = min(max(frac, 0.0), 1.0)
+    return frac * 0.9 if phase == "Receiving objects" else 0.9 + frac * 0.1
+
+
+def _git_noisy_line(line):
+    """True for per-percent git progress spam worth sampling, not logging raw."""
+    import re
+
+    return bool(
+        re.search(
+            r"(?:remote:\s*)?(Counting objects|Compressing objects|Receiving objects|Resolving deltas).*?\d+%",
+            line,
+        )
+    )
+
+
+def _run_logged(cmd, log_cb=None, cancelled=None, check=True, progress_cb=None):
+    """Run cmd, streaming merged stdout/stderr to log_cb line by line.
+
+    Logs the command first so the scrolling log shows what ran. Git writes
+    its transfer progress to stderr with carriage returns; in text mode
+    those read as separate lines. Per-percent updates are sampled (every
+    10% per phase) instead of logged raw, and Receiving/Resolving updates
+    drive progress_cb with a 0-1 fraction when given. Raises BuildCancelled
+    when cancelled, RuntimeError on nonzero exit when check is set.
+    """
+    import re
+
+    if log_cb:
+        try:
+            log_cb("$ " + " ".join(str(c) for c in cmd))
+        except Exception:
+            pass
+    proc = _host_popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    logged_buckets = set()
+    if proc.stdout is not None:
+        for line in proc.stdout:
+            if cancelled and cancelled():
+                _kill_proc(proc)
+                raise BuildCancelled("Build cancelled.")
+            text = line.rstrip()
+            if progress_cb is not None:
+                try:
+                    frac = _git_progress_fraction(text)
+                except Exception:
+                    frac = None
+                if frac is not None:
+                    try:
+                        progress_cb(frac)
+                    except Exception:
+                        pass
+            if log_cb:
+                if _git_noisy_line(text):
+                    m = re.search(
+                        r"(Counting objects|Compressing objects|Receiving objects|Resolving deltas).*?(\d+)%",
+                        text,
+                    )
+                    bucket = (m.group(1), int(m.group(2)) // 10) if m else (text, 0)
+                    if bucket in logged_buckets:
+                        continue
+                    logged_buckets.add(bucket)
+                log_cb(text)
+    proc.wait()
+    if cancelled and cancelled():
+        raise BuildCancelled("Build cancelled.")
+    if check and proc.returncode != 0:
+        raise RuntimeError(f"Command failed (exit {proc.returncode}); see log above.")
+    return proc
+
+
+def build_source(
+    cfg, status_cb=None, log_cb=None, commit=None, cancelled=None, on_proc=None, progress_cb=None
+):
+    src, commit = ensure_source(
+        cfg, status_cb, commit=commit, cancelled=cancelled, log_cb=log_cb, progress_cb=progress_cb
+    )
     binary_name = "eglantine.exe" if is_windows() else "eglantine"
     binary = src / "build" / "release" / "bin" / binary_name
     if get_project_last_built(cfg) == commit and binary.exists():

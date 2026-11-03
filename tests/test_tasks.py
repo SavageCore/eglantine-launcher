@@ -1306,9 +1306,12 @@ def test_ensure_source_pr_fresh_clone(monkeypatch, tmp_path, fake_home):
         ],
     }
     calls = []
+    logged = []
 
-    def fake_run(cmd, **kw):
+    def fake_run_logged(cmd, log_cb=None, cancelled=None, check=True, progress_cb=None):
         calls.append(cmd)
+        if log_cb:
+            logged.append(" ".join(str(c) for c in cmd))
         if cmd[:2] == ["git", "clone"]:
             Path(cmd[-1]).mkdir(parents=True)
             (Path(cmd[-1]) / ".git").mkdir()
@@ -1322,13 +1325,15 @@ def test_ensure_source_pr_fresh_clone(monkeypatch, tmp_path, fake_home):
             raise Exception("no local branch yet")
         return "a" * 40 + "\n"
 
-    monkeypatch.setattr(tasks, "_host_run", fake_run)
+    monkeypatch.setattr(tasks, "_run_logged", fake_run_logged)
     monkeypatch.setattr(tasks, "_host_check_output", fake_out)
-    src, commit = tasks.ensure_source(cfg)
+    src, commit = tasks.ensure_source(cfg, log_cb=logged.append)
     assert commit == "a" * 40
     assert any("clone" in c for c in calls)
     assert any("pull/366/head" in " ".join(c) for c in calls)
     assert any("checkout" in c for c in calls)
+    assert any("--progress" in " ".join(c) for c in calls)
+    assert logged, "git commands must reach the scrolling log"
 
 
 def test_ensure_source_pr_fetch_falls_back_to_pulls(monkeypatch, tmp_path, fake_home):
@@ -1343,21 +1348,161 @@ def test_ensure_source_pr_fetch_falls_back_to_pulls(monkeypatch, tmp_path, fake_
     }
     fetched = []
 
-    def fake_run(cmd, **kw):
+    def fake_run_logged(cmd, log_cb=None, cancelled=None, check=True, progress_cb=None):
         if "fetch" in cmd:
             fetched.append(cmd[-1])
             if "pull/55" in cmd[-1]:
-                raise Exception("no such ref")
+                raise RuntimeError("no such ref")
             return None
         if "remote" in cmd:
             return None
         return None
 
-    monkeypatch.setattr(tasks, "_host_run", fake_run)
-    monkeypatch.setattr(tasks, "_host_check_output", lambda *a, **k: "c" * 40 + "\n")
+    def fake_out(cmd, **kw):
+        if "remote" in cmd:
+            return "https://x/y.git\n"
+        return "c" * 40 + "\n"
+
+    monkeypatch.setattr(tasks, "_run_logged", fake_run_logged)
+    monkeypatch.setattr(tasks, "_host_check_output", fake_out)
     _, commit = tasks.ensure_source(cfg, commit="c" * 40)
     assert commit == "c" * 40
     assert fetched == ["+pull/55/head:pr-55", "+pulls/55/head:pr-55"]
+
+
+def test_run_logged_streams_output_and_command(monkeypatch):
+    from eglantine_launcher import tasks
+
+    lines = []
+
+    class Proc:
+        stdout = iter(["Receiving objects: 10%\r", "done.\n"])
+        returncode = 0
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(tasks, "_host_popen", lambda *a, **k: Proc())
+    tasks._run_logged(["git", "fetch", "origin"], log_cb=lines.append)
+    assert lines[0] == "$ git fetch origin"
+    assert "Receiving objects: 10%" in lines
+    assert "done." in lines
+
+
+def test_run_logged_raises_on_failure(monkeypatch):
+    import pytest
+
+    from eglantine_launcher import tasks
+
+    class Proc:
+        stdout = iter([])
+        returncode = 128
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(tasks, "_host_popen", lambda *a, **k: Proc())
+    with pytest.raises(RuntimeError):
+        tasks._run_logged(["git", "fetch", "origin"])
+    # check=False returns the proc instead
+    assert tasks._run_logged(["git", "fetch", "origin"], check=False).returncode == 128
+
+
+def test_run_logged_cancel_kills_proc(monkeypatch):
+    import pytest
+
+    from eglantine_launcher import tasks
+
+    killed = []
+
+    class Proc:
+        stdout = iter(["output line"])
+
+        def terminate(self):
+            killed.append(True)
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            killed.append(True)
+
+    monkeypatch.setattr(tasks, "_host_popen", lambda *a, **k: Proc())
+    with pytest.raises(tasks.BuildCancelled):
+        tasks._run_logged(["git", "clone", "x"], cancelled=lambda: True)
+    assert killed
+
+
+def test_git_progress_fraction_scales_phases():
+    import pytest
+
+    from eglantine_launcher.tasks import _git_progress_fraction
+
+    assert _git_progress_fraction("Receiving objects:  50% (61/122)") == pytest.approx(0.45)
+    assert _git_progress_fraction("Resolving deltas:  50% (61/122)") == pytest.approx(0.95)
+    assert _git_progress_fraction("Receiving objects: 100% (122/122), done.") == pytest.approx(0.9)
+    assert _git_progress_fraction("Resolving deltas: 100% (122/122), done.") == pytest.approx(1.0)
+    # remote-side phases never drive the bar (it would jump backwards)
+    assert _git_progress_fraction("remote: Counting objects:  50% (61/122)") is None
+    assert _git_progress_fraction("remote: Compressing objects:  50% (61/122)") is None
+    assert _git_progress_fraction("Cloning into 'x'...") is None
+    assert _git_progress_fraction("done.") is None
+
+
+def test_run_logged_samples_progress_spam(monkeypatch):
+    from eglantine_launcher import tasks
+
+    lines = []
+    fracs = []
+
+    class Proc:
+        stdout = iter(
+            ["Cloning into 'x'..."]
+            + [f"remote: Counting objects:  {i}% ({i}/100)" for i in range(101)]
+            + [f"Receiving objects:  {i}% ({i}/100)" for i in range(101)]
+            + ["remote: Total 100 (delta 0), reused 100 (delta 0)"]
+            + ["done."]
+        )
+        returncode = 0
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(tasks, "_host_popen", lambda *a, **k: Proc())
+    tasks._run_logged(["git", "clone", "x"], log_cb=lines.append, progress_cb=fracs.append)
+    # 202 raw progress lines collapse to ~22 sampled ones plus real output
+    assert len(lines) < 40
+    assert lines[0] == "$ git clone x"
+    assert "Cloning into 'x'..." in lines
+    assert "Receiving objects:  100% (100/100)" in lines
+    assert "remote: Total 100 (delta 0), reused 100 (delta 0)" in lines
+    assert "done." in lines
+    # only Receiving drove the bar, monotonically up
+    assert fracs and fracs == sorted(fracs)
+    assert fracs[0] == 0.0 and fracs[-1] == 0.9
+
+
+def test_ensure_source_passes_progress_cb(monkeypatch, tmp_path, fake_home):
+    from eglantine_launcher import tasks
+
+    src = tmp_path / "src" / "t"
+    (src / ".git").mkdir(parents=True)
+    cfg = {
+        "project": "t",
+        "source_dir": str(tmp_path / "src"),
+        "projects": [{"id": "t", "source_url": "https://x/y.git", "branch": "main"}],
+    }
+    seen = {}
+
+    def fake_run_logged(cmd, log_cb=None, cancelled=None, check=True, progress_cb=None):
+        seen["progress_cb"] = progress_cb
+        return None
+
+    monkeypatch.setattr(tasks, "_run_logged", fake_run_logged)
+    monkeypatch.setattr(tasks, "_host_check_output", lambda *a, **k: "d" * 40 + "\n")
+    sentinel = object()
+    tasks.ensure_source(cfg, commit="d" * 40, progress_cb=sentinel)
+    assert seen["progress_cb"] is sentinel
 
 
 def test_remove_pr_project_full_cleanup(tmp_path, fake_home, monkeypatch):
