@@ -66,6 +66,7 @@ def main() -> int:
     )
     parser.add_argument("--settings", action="store_true", help="Open the Settings window on launch")
     parser.add_argument("--about", action="store_true", help="Open the About dialog on launch")
+    parser.add_argument("--pr-builds", action="store_true", help="Open the PR Builds dialog on launch")
     args = parser.parse_args()
 
     auto = args.auto or args.launch
@@ -145,6 +146,8 @@ def main() -> int:
                 self._window.on_settings()
             if args.about:
                 self._window.on_about()
+            if args.pr_builds:
+                self._window.on_pr_builds()
             if _quit_after:
                 from gi.repository import GLib
 
