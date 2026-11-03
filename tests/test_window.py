@@ -734,26 +734,154 @@ def test_settings_open_does_not_verify_token(needs_display, fake_home, monkeypat
         window.close()
 
 
-def test_settings_open_warns_on_rejected_token(needs_display, fake_home, monkeypatch):
+def _open_settings_with_rejected(monkeypatch, urlopen_fake):
+    """Open Settings with a flagged token; run async verify callbacks inline."""
+    import time
     import urllib.request
+
+    from gi.repository import GLib
 
     from eglantine_launcher.config import load, save
     from eglantine_launcher.ui.settings_window import SettingsWindow
 
+    queued = []
+    monkeypatch.setattr(GLib, "idle_add", lambda fn, *a, **k: queued.append((fn, a)) or 0)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen_fake)
     cfg = load()
     cfg["github_token"] = "saved-token"
     cfg["github_token_rejected"] = True
     save(cfg)
-
-    def no_network(url_or_req, timeout=None):
-        raise AssertionError("no API call expected on settings open")
-
-    monkeypatch.setattr(urllib.request, "urlopen", no_network)
     window = SettingsWindow(None)
+    for _ in range(200):
+        if queued:
+            break
+        time.sleep(0.02)
+    for fn, args in queued:
+        fn(*args)
+    return window
+
+
+def test_settings_open_rechecks_rejected_token_401(needs_display, fake_home, monkeypatch):
+    import urllib.error
+    import urllib.request  # noqa: F401 (patched via sys.modules below)
+
+    from eglantine_launcher.config import load
+
+    def denied(url_or_req, timeout=None):
+        raise urllib.error.HTTPError(
+            url_or_req.full_url if hasattr(url_or_req, "full_url") else url_or_req,
+            401,
+            "Unauthorized",
+            {},
+            None,
+        )
+
+    window = _open_settings_with_rejected(monkeypatch, denied)
     try:
         label = window._token_status_label
         assert label.get_visible() is True
-        assert "rejected" in label.get_label()
+        assert "Invalid token" in label.get_label()
+        assert load()["github_token_rejected"] is True
+    finally:
+        window.close()
+
+
+def test_settings_open_rechecks_rejected_token_ok(needs_display, fake_home, monkeypatch):
+    from conftest import FakeResponse
+
+    from eglantine_launcher.config import load
+
+    def fine(url_or_req, timeout=None):
+        return FakeResponse({"resources": {"core": {"limit": 60}}})
+
+    window = _open_settings_with_rejected(monkeypatch, fine)
+    try:
+        label = window._token_status_label
+        assert label.get_visible() is True
+        assert "Verified and saved." in label.get_label()
+        assert "github_token_rejected" not in load()
+    finally:
+        window.close()
+
+
+def test_settings_open_rechecks_rejected_token_offline(needs_display, fake_home, monkeypatch):
+    import urllib.error
+
+    from eglantine_launcher.config import load
+
+    def offline(url_or_req, timeout=None):
+        raise urllib.error.URLError("boom")
+
+    window = _open_settings_with_rejected(monkeypatch, offline)
+    try:
+        label = window._token_status_label
+        assert label.get_visible() is True
+        assert "Couldn't reach GitHub" in label.get_label()
+        assert load()["github_token"] == "saved-token"
+        assert load()["github_token_rejected"] is True
+    finally:
+        window.close()
+
+
+def test_rejected_flag_focuses_token_entry(needs_display, fake_home, monkeypatch):
+    import urllib.request
+
+    from gi.repository import GLib
+
+    from eglantine_launcher.config import load, save
+    from eglantine_launcher.ui.settings_window import SettingsWindow
+
+    def no_network(url_or_req, timeout=None):
+        raise AssertionError("focus test drives no verify by itself")
+
+    # focus assertion must not depend on the async verify running
+    monkeypatch.setattr(urllib.request, "urlopen", no_network)
+    cfg = load()
+    cfg["github_token"] = "saved-token"
+    cfg["github_token_rejected"] = True
+    save(cfg)
+    window = SettingsWindow(None)
+    try:
+        window.present()
+        ctx = GLib.MainContext.default()
+        for _ in range(100):
+            if window.get_focus() is not None:
+                break
+            ctx.iteration(False)
+        focus, node = window.get_focus(), window.token_entry
+        assert focus is not None
+        while focus is not None and focus is not node:
+            focus = focus.get_parent()
+        assert focus is node
+    finally:
+        window.close()
+
+
+def test_token_enter_triggers_apply(needs_display, fake_home):
+    from gi.repository import Gtk
+
+    from eglantine_launcher.ui.settings_window import SettingsWindow
+
+    window = SettingsWindow(None)
+    try:
+        fired = []
+        window.token_entry.connect("apply", lambda *_: fired.append(True))
+
+        def find_text(widget):
+            if isinstance(widget, Gtk.Text):
+                return widget
+            child = widget.get_first_child()
+            while child is not None:
+                found = find_text(child)
+                if found is not None:
+                    return found
+                child = child.get_next_sibling()
+            return None
+
+        # Text.activate() is gated off-screen; emitting the signal is the
+        # same emission a real Enter keypress produces (verified with xdotool).
+        find_text(window.token_entry).emit("activate")
+        assert fired == [True]
     finally:
         window.close()
 

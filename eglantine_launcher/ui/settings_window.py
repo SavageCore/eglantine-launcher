@@ -395,6 +395,7 @@ class SettingsWindow(Adw.Window):
         self.token_entry.set_text(self.cfg.get("github_token", "") or "")
         self.token_entry.set_show_apply_button(True)
         self.token_entry.connect("apply", self._on_token_apply)
+        self._connect_token_activate(self.token_entry)
         self._reveal_on_focus(self.token_entry)
         self.api_group.add(self.token_entry)
         self._token_status_label = Gtk.Label(label="")
@@ -475,8 +476,13 @@ class SettingsWindow(Adw.Window):
         close_btn.set_margin_start(12)
         close_btn.set_margin_end(12)
         list_page.append(close_btn)
-        # don't leave the token field focused on open
-        self.connect("map", lambda *_: close_btn.grab_focus())
+        # don't leave the token field focused on open - unless the saved
+        # token was flagged rejected, in which case focus it so Enter
+        # re-verifies via the row's apply button instead of closing.
+        if self.cfg.get("github_token_rejected") and (self.cfg.get("github_token") or "").strip():
+            self.connect("map", lambda *_: self.token_entry.grab_focus())
+        else:
+            self.connect("map", lambda *_: close_btn.grab_focus())
 
         self.stack = Gtk.Stack()
         self.stack.add_named(list_page, "list")
@@ -484,12 +490,15 @@ class SettingsWindow(Adw.Window):
         self.stack.add_named(self.add_page, "add")
 
         if self.cfg.get("github_token_rejected"):
-            # Never verified here: checking happens on save (Enter) and
-            # the rejected flag is set when real API use gets a 401.
+            # The stamp may be stale (e.g. a transient GitHub 401), so
+            # re-check the saved token live instead of asserting it is
+            # still bad. Probes carry no "projects" key, so a 401 here
+            # never re-stamps the config file.
             self._set_token_status(
-                "Saved token was rejected by GitHub - check it and press Enter to re-verify.",
+                "Saved token was rejected by GitHub - re-checking it…",
                 "error",
             )
+            self._auto_reverify_token()
 
         toolbar_view = Adw.ToolbarView()
         toolbar_view.add_top_bar(toolbar)
@@ -572,6 +581,31 @@ class SettingsWindow(Adw.Window):
         return False
 
     @staticmethod
+    def _connect_token_activate(row):
+        """Enter in the token field verifies, like the tick button.
+
+        Adw does not forward the inner Gtk.Text activation to the row's
+        apply signal, so without this Enter falls through to whichever
+        button has focus (previously Close, which just closed Settings).
+        """
+        from gi.repository import Gtk
+
+        def find_text(widget):
+            if isinstance(widget, Gtk.Text):
+                return widget
+            child = widget.get_first_child()
+            while child is not None:
+                found = find_text(child)
+                if found is not None:
+                    return found
+                child = child.get_next_sibling()
+            return None
+
+        text = find_text(row)
+        if text is not None:
+            text.connect("activate", lambda *_: row.emit("apply"))
+
+    @staticmethod
     def _reveal_on_focus(row):
         """Show the token while editing; hide it again on focus out."""
         from gi.repository import Gtk
@@ -606,16 +640,23 @@ class SettingsWindow(Adw.Window):
         self._set_token_status("Verifying...")
         threading.Thread(target=self._verify_token, args=(token,), daemon=True).start()
 
-    def _verify_token(self, token):
+    def _verify_token(self, token, auto=False):
         from .. import tasks
 
         try:
             tasks.api_get_json("https://api.github.com/rate_limit", {"github_token": token}, timeout=20)
-            GLib.idle_add(self._token_verified, token)
+            GLib.idle_add(self._token_verified, token, auto)
         except Exception as e:
-            GLib.idle_add(self._token_failed, token, e)
+            GLib.idle_add(self._token_failed, token, e, auto)
 
-    def _token_verified(self, token):
+    def _auto_reverify_token(self):
+        """Re-check a flagged token on settings open (the stamp may be stale)."""
+        token = self.token_entry.get_text().strip()
+        if not token:
+            return
+        threading.Thread(target=self._verify_token, args=(token, True), daemon=True).start()
+
+    def _token_verified(self, token, _auto=False):
         if self.token_entry.get_text().strip() != token:
             return
         from .. import tasks
@@ -626,13 +667,15 @@ class SettingsWindow(Adw.Window):
         save_config(self.cfg)
         self._set_token_status("Verified and saved.", "success", timeout=8)
 
-    def _token_failed(self, token, error):
+    def _token_failed(self, token, error, auto=False):
         if self.token_entry.get_text().strip() != token:
             return
         from urllib.error import HTTPError
 
         if isinstance(error, HTTPError) and error.code in (401, 403):
             self._set_token_status("Invalid token - check it and try again.", "error")
+        elif auto:
+            self._set_token_status("Couldn't reach GitHub to re-check the saved token - kept it.", "warning")
         else:
             reason = getattr(error, "reason", error)
             self.cfg["github_token"] = token
