@@ -74,19 +74,23 @@ running out of RAM.
 
 ## Install shortcut
 
-Use the "Install Shortcut" button in the app, or run:
+Use the "Shortcuts..." button in the launch row, or run:
 
 ```sh
-python3 -m eglantine_launcher  # then click Install Shortcut
+python3 -m eglantine_launcher  # then click Shortcuts...
 ```
+
+The dialog offers per-project targets that coexist across forks:
+Desktop (`~/Desktop`), Start Menu (`~/.local/share/applications`),
+and Steam (non-Steam shortcut via `shortcuts.vdf`, restart Steam to see it).
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.11+
 - GTK 4 + libadwaita (PyGObject)
 
 ## Downloads
 
 Tagged releases ship a Windows PyInstaller build plus Linux
 AppImage, .deb, .rpm, and Flatpak (see `.github/workflows/release.yml`).
-The AppImage needs Python 3.10+, GTK 4, and libadwaita on the host.
+The AppImage needs Python 3.11+, GTK 4, and libadwaita on the host.

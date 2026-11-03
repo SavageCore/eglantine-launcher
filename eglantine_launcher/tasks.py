@@ -9,7 +9,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .config import save as save_config
@@ -488,7 +488,7 @@ def _parse_branch_timestamp(value):
             text = text[:-1] + "+00:00"
         dt = datetime.fromisoformat(text)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt
     except Exception:
         return None
@@ -837,6 +837,23 @@ def applications_dir():
     return base / "applications"
 
 
+def desktop_dir():
+    """User's Desktop dir (xdg-user-dir DESKTOP, fallback ~/Desktop)."""
+    try:
+        out = subprocess.run(["xdg-user-dir", "DESKTOP"], capture_output=True, text=True, timeout=5)
+        candidate = (out.stdout or "").strip()
+        if candidate:
+            return Path(candidate)
+    except Exception:
+        pass
+    return Path.home() / "Desktop"
+
+
+def shortcut_filename(pid):
+    safe = "".join(c if (c.isalnum() or c in "-_") else "-" for c in (pid or "eglantine"))
+    return f"eglantine-launcher-{safe}.desktop"
+
+
 def _project_by_id(cfg, pid):
     return next((p for p in cfg.get("projects", []) if p.get("id") == pid), {})
 
@@ -846,8 +863,11 @@ def shortcut_name(project):
 
 
 def shortcut_path(cfg, pid):
-    safe = "".join(c if (c.isalnum() or c in "-_") else "-" for c in (pid or "eglantine"))
-    return applications_dir() / f"eglantine-launcher-{safe}.desktop"
+    return applications_dir() / shortcut_filename(pid)
+
+
+def desktop_shortcut_path(cfg, pid):
+    return desktop_dir() / shortcut_filename(pid)
 
 
 def project_icon(cfg, project):
@@ -865,38 +885,227 @@ def project_icon(cfg, project):
         return None
 
 
-def install_shortcut(cfg, pid, app_root):
-    """Create/update the per-emu desktop shortcut. Returns its path."""
-    project = _project_by_id(cfg, pid or cfg.get("project"))
-    if not project:
-        raise RuntimeError("Unknown project")
+def quote_arg(arg):
+    """Shell/.desktop/Steam quoting: double quotes only when needed.
+
+    (shlex single-quotes are literal text in .desktop Exec lines and are
+    not parsed by Steam either, so roll our own double-quote style.)
+    """
+    text = str(arg)
+    if not text:
+        return '""'
+    import re
+
+    if re.match(r"^[A-Za-z0-9_@%+=:,./-]+$", text):
+        return text
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _running_from_appimage():
+    """This process's AppImage path, or None.
+
+    ``APPIMAGE`` alone is not proof: it can be inherited from a parent
+    process (e.g. a shell running inside some *other* AppImage) while this
+    code runs from a source checkout. Trust it only when ``__file__`` is
+    inside the ``APPDIR`` mount it belongs to.
+    """
+    appimage = os.environ.get("APPIMAGE")
+    appdir = os.environ.get("APPDIR")
+    if not appimage or not appdir:
+        return None
+    try:
+        here = str(Path(__file__).resolve())
+    except Exception:
+        return None
+    if here == appdir or here.startswith(appdir.rstrip("/") + "/"):
+        return appimage
+    return None
+
+
+def shortcut_argv(pid, app_root=None):
+    """Launch command for a per-project shortcut, stable outside this process.
+
+    The old code always emitted ``env PYTHONPATH=<app_root> <python> -m ...``
+    where ``app_root`` is the running tree. From an AppImage that is the
+    transient ``/tmp/.mount_*`` FUSE mount, so every shortcut died with it.
+    Instead, re-launch through the installed bundle per install method.
+    Returns argv (no shell quoting); callers quote as needed.
+    """
+    args = ["--auto", "--project", pid]
+    try:
+        method = detect_install_method()
+    except Exception:
+        method = "source"
+    if method == "appimage":
+        appimage = _running_from_appimage()
+        if appimage:
+            return [appimage, *args]
+        # Inherited APPIMAGE from an unrelated mount: fall through to source.
+        method = "source"
+    if method == "flatpak":
+        return ["flatpak", "run", FLATPAK_APP_ID, *args]
+    if method in ("dnf", "apt", "manual-pkg"):
+        return ["/usr/bin/eglantine-launcher", *args]
+    if method == "windows":
+        return [sys.executable, *args]
+    root = app_root or Path(__file__).resolve().parents[1]
+    return ["/usr/bin/env", f"PYTHONPATH={root}", sys.executable, "-m", "eglantine_launcher", *args]
+
+
+def shortcut_start_dir(app_root=None):
+    """Working dir for shortcuts; the mount is not a valid StartDir."""
+    try:
+        method = detect_install_method()
+    except Exception:
+        method = "source"
+    if method == "source":
+        return str(app_root or Path(__file__).resolve().parents[1])
+    return str(Path.home())
+
+
+def stable_icon(cfg, project, app_root):
+    """Project icon, or the bundled icon staged somewhere mount-independent.
+
+    The bundled ``data/icons`` tree lives inside the AppImage/Flatpak image,
+    so referencing it directly leaves a dead Icon= once unmounted. Stage the
+    fallback to ``~/.local/share/icons`` (visible to host and sandbox).
+    """
     icon = project_icon(cfg, project)
-    if icon is None:
-        icon = Path(app_root) / "data" / "icons" / "eglantine-launcher.png"
-    content = f"""[Desktop Entry]
+    if icon is not None:
+        return icon
+    try:
+        src = Path(app_root) / "data" / "icons" / "eglantine-launcher.png"
+        dest = Path.home() / ".local" / "share" / "icons" / "eglantine-launcher.png"
+        if src != dest and src.is_file():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if not dest.is_file():
+                shutil.copyfile(src, dest)
+            return dest
+        if src.is_file():
+            return src
+    except OSError:
+        pass
+    return Path(app_root) / "data" / "icons" / "eglantine-launcher.png"
+
+
+def render_desktop_entry(cfg, project, app_root):
+    """Render the shared .desktop content for Desktop and Start Menu targets."""
+    icon = stable_icon(cfg, project, app_root)
+    quoted = " ".join(quote_arg(a) for a in shortcut_argv(project["id"], app_root))
+    return f"""[Desktop Entry]
 Type=Application
 Name={shortcut_name(project)}
 Comment=Check for updates, then launch {project.get("name", project.get("id"))}
-Exec=env PYTHONPATH={app_root} {sys.executable} -m eglantine_launcher --auto --project {project["id"]}
+Exec={quoted}
 Icon={icon}
 Terminal=false
 Categories=Game;Emulator;
 """
-    applications_dir().mkdir(parents=True, exist_ok=True)
-    path = shortcut_path(cfg, project["id"])
-    path.write_text(content)
+
+
+def install_shortcut(cfg, pid, app_root, targets=("applications",)):
+    """Create/update per-project shortcuts. Returns {target: Path}."""
+    project = _project_by_id(cfg, pid or cfg.get("project"))
+    if not project:
+        raise RuntimeError("Unknown project")
+    pid = project["id"]
+    wanted = set(targets or ())
+    if is_windows():
+        # .desktop files are inert on Windows; Steam is the shortcut there.
+        wanted -= {"applications", "desktop"}
+    written = {}
+    if wanted & {"applications", "desktop"}:
+        content = render_desktop_entry(cfg, project, app_root)
+    if "applications" in wanted:
+        applications_dir().mkdir(parents=True, exist_ok=True)
+        path = shortcut_path(cfg, pid)
+        path.write_text(content)
+        written["applications"] = path
+    if "desktop" in wanted:
+        try:
+            desktop_dir().mkdir(parents=True, exist_ok=True)
+            path = desktop_shortcut_path(cfg, pid)
+            path.write_text(content)
+            written["desktop"] = path
+        except Exception:
+            pass
+    if written:
+        try:
+            subprocess.run(["update-desktop-database", str(applications_dir())], capture_output=True)
+        except Exception:
+            pass
+    if "steam" in wanted:
+        from . import steam_shortcuts
+
+        icon = stable_icon(cfg, project, app_root)
+        argv = shortcut_argv(pid, app_root)
+        steam_shortcuts.add_shortcut(
+            project, pid, app_root, icon=icon, argv=argv, start_dir=shortcut_start_dir(app_root)
+        )
+        # Record a marker path (first userdata file) so callers can report.
+        files = steam_shortcuts.shortcuts_files()
+        written["steam"] = files[0] if files else Path("shortcuts.vdf")
+    return written
+
+
+def remove_shortcut(cfg, pid, targets=("applications", "desktop", "steam")):
+    """Remove per-project shortcuts for the given targets. True when all clear."""
+    pid = pid or cfg.get("project")
+    project = _project_by_id(cfg, pid)
+    app_name = shortcut_name(project) if project else None
+    wanted = set(targets or ())
+    if is_windows():
+        wanted -= {"applications", "desktop"}
+    ok = True
+    if "applications" in wanted:
+        path = shortcut_path(cfg, pid)
+        if path.exists():
+            try:
+                path.unlink()
+            except Exception:
+                ok = False
+        ok = ok and not path.exists()
+    if "desktop" in wanted:
+        path = desktop_shortcut_path(cfg, pid)
+        if path.exists():
+            try:
+                path.unlink()
+            except Exception:
+                ok = False
+        ok = ok and not path.exists()
+    if "steam" in wanted:
+        try:
+            from . import steam_shortcuts
+
+            steam_shortcuts.remove_shortcut(pid, app_name)
+        except Exception:
+            ok = False
+        else:
+            try:
+                ok = ok and not steam_shortcuts.shortcut_exists(pid, app_name)
+            except Exception:
+                pass
+    return ok
+
+
+def shortcut_state(cfg, pid):
+    """Which shortcut targets exist for one project id."""
+    pid = pid or cfg.get("project")
+    project = _project_by_id(cfg, pid)
+    app_name = shortcut_name(project) if project else None
     try:
-        subprocess.run(["update-desktop-database", str(applications_dir())], capture_output=True)
+        from . import steam_shortcuts
+
+        steam = bool(steam_shortcuts.shortcut_exists(pid, app_name))
     except Exception:
-        pass
-    return path
-
-
-def remove_shortcut(cfg, pid):
-    path = shortcut_path(cfg, pid or cfg.get("project"))
-    if path.exists():
-        path.unlink()
-    return not path.exists()
+        steam = False
+    if is_windows():
+        return {"applications": False, "desktop": False, "steam": steam}
+    return {
+        "applications": shortcut_path(cfg, pid).exists(),
+        "desktop": desktop_shortcut_path(cfg, pid).exists(),
+        "steam": steam,
+    }
 
 
 def remove_project_data(cfg, pid):

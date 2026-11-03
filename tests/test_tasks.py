@@ -1,5 +1,6 @@
 """Unit tests for release/commit matching logic (no network, no display)."""
 
+from datetime import UTC
 from pathlib import Path
 
 import pytest
@@ -522,7 +523,8 @@ def test_shortcut_install_remove_roundtrip(tmp_path, fake_home, monkeypatch):
         "install_dir": str(tmp_path / "install"),
         "projects": [{"id": "eglantine", "name": "Eglantine", "icon_url": None}],
     }
-    path = tasks.install_shortcut(cfg, "eglantine", "/app/root")
+    written = tasks.install_shortcut(cfg, "eglantine", "/app/root")
+    path = written["applications"]
     assert path.name == "eglantine-launcher-eglantine.desktop"
     text = path.read_text()
     assert "Name=Eglantine (EL)" in text
@@ -537,6 +539,90 @@ def test_shortcut_name_fallback():
 
     assert shortcut_name({"id": "abc"}) == "abc (EL)"
     assert shortcut_name({}) == "Eglantine (EL)"
+
+
+def test_shortcut_argv_source_uses_pythonpath(tmp_path):
+    from eglantine_launcher import tasks
+
+    argv = tasks.shortcut_argv("eglantine", "/app/root")
+    assert argv[:5] == [
+        "/usr/bin/env",
+        "PYTHONPATH=/app/root",
+        tasks.sys.executable,
+        "-m",
+        "eglantine_launcher",
+    ]
+    assert argv[-3:] == ["--auto", "--project", "eglantine"]
+
+
+def test_shortcut_argv_appimage_uses_bundle(monkeypatch):
+    from eglantine_launcher import tasks
+
+    monkeypatch.setattr(tasks, "detect_install_method", lambda: "appimage")
+    monkeypatch.setattr(tasks, "_running_from_appimage", lambda: "/home/user/eglantine-launcher.AppImage")
+    assert tasks.shortcut_argv("fork-a", "/tmp/.mount-dead") == [
+        "/home/user/eglantine-launcher.AppImage",
+        "--auto",
+        "--project",
+        "fork-a",
+    ]
+    assert tasks.shortcut_start_dir("/tmp/.mount-dead") == str(tasks.Path.home())
+
+
+def test_shortcut_argv_flatpak_and_pkg(monkeypatch):
+    from eglantine_launcher import tasks
+
+    monkeypatch.setattr(tasks, "detect_install_method", lambda: "flatpak")
+    assert tasks.shortcut_argv("eglantine", "/app")[:3] == ["flatpak", "run", tasks.FLATPAK_APP_ID]
+    monkeypatch.setattr(tasks, "detect_install_method", lambda: "apt")
+    assert tasks.shortcut_argv("eglantine", "/usr/lib/eglantine-launcher")[0] == "/usr/bin/eglantine-launcher"
+
+
+def test_running_from_appimage_match(monkeypatch):
+    from pathlib import Path as _Path
+
+    from eglantine_launcher import tasks
+
+    here = _Path(tasks.__file__).resolve()
+    monkeypatch.setenv("APPDIR", str(here.parents[2]))
+    monkeypatch.setenv("APPIMAGE", "/home/user/eglantine.AppImage")
+    assert tasks._running_from_appimage() == "/home/user/eglantine.AppImage"
+
+
+def test_running_from_appimage_ignores_foreign_mount(monkeypatch, tmp_path):
+    from eglantine_launcher import tasks
+
+    # Inherited env from an unrelated mount (e.g. a shell running inside
+    # another AppImage) must not be trusted for our own bundle path.
+    monkeypatch.setenv("APPIMAGE", "/home/user/other.AppImage")
+    monkeypatch.setenv("APPDIR", str(tmp_path / "mount"))
+    assert tasks._running_from_appimage() is None
+    monkeypatch.setattr(tasks, "detect_install_method", lambda: "appimage")
+    assert tasks.shortcut_argv("eglantine", "/app/root")[0] == "/usr/bin/env"
+
+
+def test_rendered_entry_has_no_transient_mount(tmp_path, fake_home, monkeypatch):
+    from pathlib import Path as _Path
+
+    from eglantine_launcher import tasks
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setattr(_Path, "home", lambda: fake_home)
+    monkeypatch.setattr(tasks, "detect_install_method", lambda: "appimage")
+    monkeypatch.setattr(tasks, "_running_from_appimage", lambda: "/home/user/eglantine-launcher.AppImage")
+    (tmp_path / "data" / "icons").mkdir(parents=True)
+    (tmp_path / "data" / "icons" / "eglantine-launcher.png").write_bytes(b"\x89PNG-fake")
+    cfg = {
+        "project": "eglantine",
+        "install_dir": str(tmp_path / "install"),
+        "projects": [{"id": "eglantine", "name": "Eglantine", "icon_url": None}],
+    }
+    content = tasks.render_desktop_entry(cfg, cfg["projects"][0], str(tmp_path))
+    assert ".mount" not in content
+    assert "/home/user/eglantine-launcher.AppImage" in content
+    icon_line = next(line for line in content.splitlines() if line.startswith("Icon="))
+    assert ".mount" not in icon_line
+    assert str(fake_home) in icon_line
 
 
 def _url_fixture(monkeypatch, releases, tags):
@@ -817,15 +903,15 @@ def test_parse_branch_timestamp():
 
 
 def test_sort_branch_names_default_first_then_newest():
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from eglantine_launcher.tasks import sort_branch_names
 
     names = ["b-old", "main", "b-new"]
     dates = {
-        "b-old": datetime(2024, 1, 1, tzinfo=timezone.utc),
-        "b-new": datetime(2026, 1, 1, tzinfo=timezone.utc),
-        "main": datetime(2020, 1, 1, tzinfo=timezone.utc),
+        "b-old": datetime(2024, 1, 1, tzinfo=UTC),
+        "b-new": datetime(2026, 1, 1, tzinfo=UTC),
+        "main": datetime(2020, 1, 1, tzinfo=UTC),
     }
     assert sort_branch_names(names, dates, "main") == ["main", "b-new", "b-old"]
     # undated branches keep API order after dated ones

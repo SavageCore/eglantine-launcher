@@ -58,8 +58,41 @@ def test_stop_button_hidden_initially_and_destructive(needs_display, fake_home):
         assert window.stop_btn.get_visible() is False
         assert window.stop_btn.get_label() == "Stop"
         assert "destructive-action" in window.stop_btn.get_css_classes()
-        assert window.has_action("shortcut")
+        assert not window.has_action("shortcut")
+        assert window.shortcut_btn.get_label() == "Shortcuts..."
         assert window.has_action("folder")
+    finally:
+        window.close()
+
+
+class _FakeSwitch:
+    def __init__(self, active):
+        self._active = active
+
+    def get_active(self):
+        return self._active
+
+
+def test_shortcuts_response_applies_desktop_and_menu(needs_display, fake_home, tmp_path, monkeypatch):
+    from eglantine_launcher import tasks
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setattr(tasks, "desktop_dir", lambda: tmp_path / "Desktop")
+    (tmp_path / "Desktop").mkdir()
+
+    window = LauncherWindow(_make_app())
+    try:
+        pid = window._current_info().get("id", window.cfg.get("project"))
+        window._on_shortcuts_response(
+            None, "apply", pid, _FakeSwitch(True), _FakeSwitch(True), _FakeSwitch(False)
+        )
+        assert tasks.shortcut_path(window.cfg, pid).exists()
+        assert tasks.desktop_shortcut_path(window.cfg, pid).exists()
+        window._on_shortcuts_response(
+            None, "apply", pid, _FakeSwitch(False), _FakeSwitch(False), _FakeSwitch(False)
+        )
+        assert not tasks.shortcut_path(window.cfg, pid).exists()
+        assert not tasks.desktop_shortcut_path(window.cfg, pid).exists()
     finally:
         window.close()
 

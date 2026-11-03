@@ -14,7 +14,7 @@ homepage: https://github.com/SavageCore/eglantine-launcher
 license: GPL-3.0-or-later
 
 depends:
-  - python3 (>= 3.10)
+  - python3 (>= 3.11)
   - python3-gi
   - gir1.2-gtk-4.0
   - gir1.2-adw-1
@@ -28,7 +28,7 @@ contents:
 overrides:
   rpm:
     depends:
-      - python3 >= 3.10
+      - python3 >= 3.11
       - python3-gobject
       - gtk4
       - libadwaita

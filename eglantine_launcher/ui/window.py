@@ -42,8 +42,7 @@ from ..tasks import (
     release_platforms,
     remove_shortcut,
     self_update_dialog_text,
-    shortcut_name,
-    shortcut_path,
+    shortcut_state,
     source_dir,
     source_version_entries,
     stage_appimage_swap,
@@ -110,16 +109,13 @@ class LauncherWindow(Adw.ApplicationWindow):
         about_action = Gio.SimpleAction.new("about", None)
         about_action.connect("activate", self.on_about)
         self.add_action(about_action)
-        shortcut_action = Gio.SimpleAction.new("shortcut", None)
-        shortcut_action.connect("activate", self.on_install_shortcut)
-        self.add_action(shortcut_action)
         folder_action = Gio.SimpleAction.new("folder", None)
         folder_action.connect("activate", self.on_open_folder)
         self.add_action(folder_action)
         pr_action = Gio.SimpleAction.new("pr-builds", None)
         pr_action.connect("activate", self.on_pr_builds)
         self.add_action(pr_action)
-        self._build_menu("Install Shortcut")
+        self._build_menu()
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         box.set_margin_top(12)
@@ -171,7 +167,6 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.project_row.connect("notify::selected", self._on_selector_changed)
         self.mode_row.connect("notify::selected", self._on_selector_changed)
         GLib.idle_add(self._refresh_versions)
-        GLib.idle_add(self._refresh_shortcut_btn)
         GLib.idle_add(self._start_self_update_check)
         GLib.timeout_add_seconds(1, self._delayed_startup_check)
         if not auto:
@@ -215,7 +210,11 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.stop_btn.connect("clicked", self.on_stop_clicked)
         self.stop_btn.set_visible(False)
 
+        self.shortcut_btn = Gtk.Button(label="Shortcuts...")
+        self.shortcut_btn.connect("clicked", self.on_shortcuts_clicked)
+
         self.action_bar = Gtk.ActionBar()
+        self.action_bar.pack_start(self.shortcut_btn)
         self.action_bar.pack_start(self.progress)
         # End group reads left-to-right: Stop then Launch keeps
         # Launch rightmost as the primary action.
@@ -325,11 +324,10 @@ class LauncherWindow(Adw.ApplicationWindow):
         if display:
             display.get_clipboard().set(text)
 
-    def _build_menu(self, shortcut_label):
+    def _build_menu(self):
         menu = Gio.Menu()
         menu.append("Settings", "win.settings")
         menu.append("PR Builds...", "win.pr-builds")
-        menu.append(shortcut_label, "win.shortcut")
         menu.append("Open Data Folder", "win.folder")
         menu.append("About", "win.about")
         self._menu = menu
@@ -531,7 +529,6 @@ class LauncherWindow(Adw.ApplicationWindow):
         if self._updating:
             return
         self._save_choices()
-        self._refresh_shortcut_btn()
         self._refresh_versions()
 
     def _refresh_versions(self):
@@ -1093,25 +1090,85 @@ class LauncherWindow(Adw.ApplicationWindow):
 
                 GLib.timeout_add_seconds(2, _quit)
 
-    def _refresh_shortcut_btn(self):
-        info = self._current_info()
-        pid = info.get("id", self.cfg.get("project"))
-        self._build_menu("Remove Shortcut" if shortcut_path(self.cfg, pid).exists() else "Install Shortcut")
-
-    def on_install_shortcut(self, *_args):
+    def on_shortcuts_clicked(self, *_args):
         try:
             info = self._current_info()
             pid = info.get("id", self.cfg.get("project"))
-            if shortcut_path(self.cfg, pid).exists():
-                remove_shortcut(self.cfg, pid)
-                self._set_status("Shortcut removed.")
-            else:
-                app_root = Path(__file__).resolve().parents[2]
-                install_shortcut(self.cfg, pid, app_root)
-                self._set_status(f"Shortcut installed: {shortcut_name(info)}.")
-            self._refresh_shortcut_btn()
+            if not pid:
+                self._set_status("No project selected.", sticky=True)
+                return
+            state = shortcut_state(self.cfg, pid)
         except Exception as e:
             self._set_status(f"Shortcut error: {e}", sticky=True)
+            return
+        name = info.get("name", pid)
+        dialog = Adw.MessageDialog.new(
+            self,
+            f"Shortcuts - {name}",
+            "Choose where to install a launcher for this project. "
+            "Each target is independent, so different forks can coexist.",
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("apply", "Apply")
+        dialog.set_response_appearance("apply", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("apply")
+        desktop_row = Adw.SwitchRow(title="Desktop", subtitle="~/Desktop")
+        desktop_row.set_active(bool(state.get("desktop")))
+        menu_row = Adw.SwitchRow(title="Start Menu", subtitle="Application menu")
+        menu_row.set_active(bool(state.get("applications")))
+        if is_windows():
+            # .desktop files do nothing on Windows; Steam is the shortcut there.
+            desktop_row.set_sensitive(False)
+            desktop_row.set_subtitle("Linux only")
+            menu_row.set_sensitive(False)
+            menu_row.set_subtitle("Linux only")
+        steam_row = Adw.SwitchRow(title="Steam", subtitle="Non-Steam shortcut (restart Steam to see changes)")
+        steam_row.set_active(bool(state.get("steam")))
+        group = Adw.PreferencesGroup()
+        group.add(desktop_row)
+        group.add(menu_row)
+        group.add(steam_row)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.append(group)
+        dialog.set_extra_child(box)
+        dialog.connect("response", self._on_shortcuts_response, pid, desktop_row, menu_row, steam_row)
+        dialog.present()
+
+    def _on_shortcuts_response(self, dialog, response, pid, desktop_row, menu_row, steam_row, *_args):
+        if response != "apply":
+            return
+        desired = {
+            "desktop": bool(desktop_row.get_active()),
+            "applications": bool(menu_row.get_active()),
+            "steam": bool(steam_row.get_active()),
+        }
+        try:
+            current = shortcut_state(self.cfg, pid)
+        except Exception as e:
+            self._set_status(f"Shortcut error: {e}", sticky=True)
+            return
+        app_root = Path(__file__).resolve().parents[2]
+        errors = []
+        for target, want in desired.items():
+            have = bool(current.get(target))
+            if want == have:
+                continue
+            try:
+                if want:
+                    install_shortcut(self.cfg, pid, app_root, targets=(target,))
+                else:
+                    remove_shortcut(self.cfg, pid, targets=(target,))
+            except Exception as e:
+                errors.append(f"{target}: {e}")
+        if errors:
+            self._set_status(f"Shortcut error: {'; '.join(errors)}", sticky=True)
+            return
+        changed = [t for t in desired if desired[t] != current.get(t)]
+        if not changed:
+            self._set_status("No shortcut changes.")
+        else:
+            note = " (restart Steam to see changes)" if "steam" in changed else ""
+            self._set_status(f"Shortcuts updated: {', '.join(sorted(changed))}.{note}")
 
     def on_open_folder(self, *_args):
         folder = Path(self.cfg["install_dir"])
@@ -1363,7 +1420,6 @@ class LauncherWindow(Adw.ApplicationWindow):
             finally:
                 self._updating = False
             self._save_choices()
-            self._refresh_shortcut_btn()
             self._refresh_versions()
             self.on_launch()
 
@@ -1385,7 +1441,6 @@ class LauncherWindow(Adw.ApplicationWindow):
                     self.cfg["project"] = ids[0]
         finally:
             self._updating = False
-        self._refresh_shortcut_btn()
         self._refresh_versions()
 
     def on_about(self, *_args):

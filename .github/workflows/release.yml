@@ -84,7 +84,7 @@ jobs:
             echo "| Linux - Fedora/Nobara | [.rpm package](${BASE}/eglantine-launcher-${VERSION}-1.x86_64.rpm) |"
             echo "| Linux - Flatpak | [Flatpak bundle](${BASE}/eglantine-launcher.flatpak) |"
             echo ""
-            echo "> **Not sure which to pick?** Windows: unzip and run \`eglantine-launcher.exe\`. Linux: use your distro's native package (.deb/.rpm), the AppImage for anything else (\`chmod +x\` then run; needs Python 3.10+, GTK 4 and libadwaita), or Flatpak for a sandboxed install. Package repos (apt/dnf/flatpak remote) are at https://savagecore.github.io/eglantine-launcher/."
+            echo "> **Not sure which to pick?** Windows: unzip and run \`eglantine-launcher.exe\`. Linux: use your distro's native package (.deb/.rpm), the AppImage for anything else (\`chmod +x\` then run; needs Python 3.11+, GTK 4 and libadwaita), or Flatpak for a sandboxed install. Package repos (apt/dnf/flatpak remote) are at https://savagecore.github.io/eglantine-launcher/."
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
       - name: Create GitHub Release
