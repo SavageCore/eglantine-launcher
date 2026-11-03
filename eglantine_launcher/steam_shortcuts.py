@@ -7,9 +7,10 @@ the ``--project <id>`` marker in Exe/LaunchOptions (falling back to the
 ``<name> (EL)`` AppName), never by index, so foreign entries are preserved.
 
 Besides the ``icon`` field in the entry itself, the project icon is also
-copied into each user's ``config/grid/`` artwork dir (portrait, capsule,
-hero and logo names derived from the entry appid), which is what Steam
-shows for library tiles.
+copied into each user's ``config/grid/`` dir as the logo overlay (the
+small badge Steam shows on the library tile and detail page). Capsule
+and hero slots are deliberately left alone: Steam stretches those to
+fill wide banners, which mangles a small square icon.
 """
 
 import os
@@ -184,34 +185,46 @@ def shortcut_exists(pid, app_name=None, files=None):
 
 
 def grid_names(appid):
-    """Artwork filenames Steam looks up for a shortcut id (unsigned 32-bit)."""
+    """All artwork filenames Steam may look up for a shortcut id.
+
+    Only the logo is written (small square icon scales cleanly); the
+    capsule/portrait/hero slots are listed so legacy files from earlier
+    versions can be cleaned up instead of stretching the icon.
+    """
     uid = int(appid) & 0xFFFFFFFF
-    return [f"{uid}p.png", f"{uid}.png", f"{uid}_hero.png", f"{uid}_logo.png"]
+    return [f"{uid}_logo.png", f"{uid}p.png", f"{uid}.png", f"{uid}_hero.png"]
+
+
+def logo_name(appid):
+    """The single artwork file written per shortcut: the logo overlay."""
+    return grid_names(appid)[0]
 
 
 def write_artwork(shortcuts_path, appid, icon):
-    """Copy the project icon into the user's grid/ artwork dir.
+    """Copy the project icon in as the Steam logo overlay.
 
-    Returns the list of files written (empty when there is no icon).
+    Only the logo is set: Steam stretches capsule/hero art to fill wide
+    slots, which looks bad for a small square icon. Stale capsule/hero
+    files from earlier versions are removed. Returns files written.
     """
+    grid = Path(shortcuts_path).parent / "grid"
+    if grid.is_dir():
+        for stale in grid_names(appid)[1:]:
+            try:
+                (grid / stale).unlink()
+            except OSError:
+                pass
     if not icon:
         return []
     src = Path(icon)
     if not src.is_file():
         return []
-    grid = Path(shortcuts_path).parent / "grid"
     try:
         grid.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, grid / logo_name(appid))
     except OSError:
         return []
-    written = []
-    for name in grid_names(appid):
-        try:
-            shutil.copyfile(src, grid / name)
-            written.append(grid / name)
-        except OSError:
-            continue
-    return written
+    return [grid / logo_name(appid)]
 
 
 def remove_artwork(shortcuts_path, appid):

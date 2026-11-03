@@ -106,14 +106,34 @@ def test_artwork_written_and_removed(tmp_path):
     ss.add_shortcut(_project(), "eglantine", "/app/root", icon=icon, files=[vdf_path])
     entries = ss.load_entries(vdf_path)
     appid = next(iter(entries.values()))["appid"]
-    names = ss.grid_names(appid)
-    assert len(names) == 4
-    for name in names:
-        assert (grid / name).read_bytes() == b"\x89PNG-fake-icon"
+    # Logo only: no stretched capsule/hero cover.
+    assert ss.logo_name(appid).endswith("_logo.png")
+    assert (grid / ss.logo_name(appid)).read_bytes() == b"\x89PNG-fake-icon"
+    assert [p.name for p in grid.iterdir()] == [ss.logo_name(appid)]
 
     ss.remove_shortcut("eglantine", "Eglantine (EL)", files=[vdf_path])
-    for name in names:
-        assert not (grid / name).exists()
+    assert list(grid.iterdir()) == []
+
+
+def test_artwork_cleans_legacy_cover(tmp_path):
+    from eglantine_launcher import steam_shortcuts as ss
+
+    vdf_path = _make_userdata(tmp_path)
+    icon = tmp_path / "emu.png"
+    icon.write_bytes(b"\x89PNG-fake-icon")
+    grid = vdf_path.parent / "grid"
+    grid.mkdir(parents=True)
+
+    # Simulate 0.1.10 layout: capsule/hero files written from the icon.
+    ss.add_shortcut(_project(), "eglantine", "/app/root", icon=icon, files=[vdf_path])
+    entries = ss.load_entries(vdf_path)
+    appid = next(iter(entries.values()))["appid"]
+    for stale in ss.grid_names(appid)[1:]:
+        (grid / stale).write_bytes(b"stale-cover")
+
+    # Re-applying the shortcut drops the stretched cover, keeps the logo.
+    ss.add_shortcut(_project(), "eglantine", "/app/root", icon=icon, files=[vdf_path])
+    assert [p.name for p in grid.iterdir()] == [ss.logo_name(appid)]
 
 
 def test_artwork_preserves_foreign_grid_files(tmp_path):
