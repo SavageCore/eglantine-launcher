@@ -12,26 +12,37 @@ from .. import __version__
 from ..config import load as load_config
 from ..config import save as save_config
 from ..tasks import (
+    LAUNCHER_API_LATEST,
+    REPOS_PAGE,
+    UPDATE_COMMANDS,
     BuildCancelled,
     _in_flatpak,
     _on_host,
     build_source,
+    build_windows_updater,
     check_build_deps,
     check_release,
+    detect_install_method,
+    download_url,
     fetch_remote_sources,
     find_release_for_commit,
     install_shortcut,
     is_windows,
     launch,
+    launcher_update_asset,
     list_commits,
     list_releases,
+    open_url,
     release_appimage_path,
     release_platforms,
     remove_shortcut,
+    self_update_dialog_text,
     shortcut_name,
     shortcut_path,
     source_dir,
     source_version_entries,
+    stage_appimage_swap,
+    windows_install_dir,
 )
 from ..tasks import arch as get_arch
 from ..tray import hide_to_tray, minimize_to_taskbar
@@ -69,6 +80,8 @@ class LauncherWindow(Adw.ApplicationWindow):
         self._latest_commit = None
         self._version_subs = []
         self._launcher_update_url = None
+        self._launcher_update_tag = None
+        self._launcher_update_assets = []
         self._updating = False
         self._force_quit = False
         self._hidden_for_launch = False
@@ -1020,19 +1033,18 @@ class LauncherWindow(Adw.ApplicationWindow):
 
                 from .. import __version__
 
-                url = "https://api.github.com/repos/SavageCore/eglantine-launcher/releases/latest"
-                req = urllib.request.Request(url, headers={"User-Agent": "eglantine-launcher"})
+                req = urllib.request.Request(
+                    LAUNCHER_API_LATEST, headers={"User-Agent": "eglantine-launcher"}
+                )
                 with urllib.request.urlopen(req, timeout=20) as r:
                     data = json.loads(r.read())
                 tag = data.get("tag_name", "").lstrip("v")
                 if tag and tag != __version__ and tag > __version__:
-                    html_url = data.get("html_url")
-                    self._launcher_update_url = html_url
-                    self._show_banner(
-                        f"Launcher update available: {tag}",
-                        button_label="Open release",
-                        action=self.on_self_update,
-                    )
+                    self._launcher_update_url = data.get("html_url")
+                    self._launcher_update_tag = tag
+                    self._launcher_update_assets = data.get("assets", []) or []
+                    method = detect_install_method()
+                    GLib.idle_add(self._show_self_update_banner, tag, method)
             except Exception:
                 pass
 
@@ -1040,11 +1052,181 @@ class LauncherWindow(Adw.ApplicationWindow):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _show_self_update_banner(self, tag, method):
+        if method in ("appimage", "windows"):
+            self._show_banner(
+                f"Launcher update available: {tag}",
+                button_label="Update now",
+                action=self.start_one_click_update,
+            )
+        else:
+            self._show_banner(
+                f"Launcher update available: {tag}",
+                button_label="How to update",
+                action=lambda: self.show_update_instructions(method),
+            )
+        return False
+
+    def show_update_instructions(self, method=None):
+        method = method or detect_install_method()
+        tag = self._launcher_update_tag or "new version"
+        title, body = self_update_dialog_text(method, tag)
+        dialog = Adw.MessageDialog.new(self, title, body)
+        if method in ("dnf", "apt", "flatpak"):
+            dialog.add_response("copy", "Copy command")
+            dialog.set_default_response("copy")
+        else:
+            if self._launcher_update_url:
+                dialog.add_response("open-release", "Open release page")
+            dialog.add_response("open-repos", "Open repo setup")
+            dialog.set_default_response("open-repos")
+        dialog.add_response("close", "Close")
+        dialog.set_close_response("close")
+        dialog.connect("response", lambda d, resp: self._on_update_dialog_response(d, resp, method))
+        dialog.present()
+
+    def _on_update_dialog_response(self, dialog, resp, method):
+        if resp == "copy" and method in UPDATE_COMMANDS:
+            try:
+                self.get_display().get_clipboard().set(UPDATE_COMMANDS[method])
+                self._set_status("Update command copied.")
+            except Exception:
+                pass
+        elif resp == "open-release" and self._launcher_update_url:
+            open_url(self._launcher_update_url)
+        elif resp == "open-repos":
+            open_url(REPOS_PAGE)
+        try:
+            dialog.close()
+        except Exception:
+            pass
+
     def on_self_update(self, *_args):
         if self._launcher_update_url:
-            import subprocess
+            open_url(self._launcher_update_url)
 
-            subprocess.Popen(_on_host(["xdg-open", self._launcher_update_url]))
+    def start_one_click_update(self, *_args):
+        method = detect_install_method()
+        if method == "appimage":
+            self._run_appimage_update()
+        elif method == "windows":
+            self._run_windows_update()
+        else:
+            self.show_update_instructions(method)
+
+    def _run_appimage_update(self):
+        import os
+
+        current = os.environ.get("APPIMAGE")
+        asset = launcher_update_asset(self._launcher_update_assets, "appimage")
+        if not current or not asset or not asset.get("browser_download_url"):
+            self.show_update_instructions("source")
+            return
+        self._set_status("Downloading launcher update...")
+        GLib.idle_add(self.progress.set_visible, True)
+
+        def worker():
+            try:
+                from pathlib import Path
+
+                target = Path(current)
+                staged = target.parent / (target.name + ".new")
+                url = asset["browser_download_url"]
+                download_url(url, staged, progress_cb=lambda f: GLib.idle_add(self._set_progress, f))
+                GLib.idle_add(self.progress.set_visible, False)
+                stage_appimage_swap(str(target), staged)
+                self._set_status("Update installed - restarting...")
+                GLib.idle_add(self._restart_into, str(target))
+            except Exception as e:
+                GLib.idle_add(self.progress.set_visible, False)
+                GLib.idle_add(self._show_update_error, f"Automatic update failed: {e}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _restart_into(self, path):
+        import os
+        import sys
+
+        try:
+            os.execv(path, [path, *sys.argv[1:]])
+        except Exception as e:
+            self._show_update_error(f"Update installed but restart failed: {e}\nReopen {path} manually.")
+        return False
+
+    def _run_windows_update(self):
+        asset = launcher_update_asset(self._launcher_update_assets, "windows")
+        if not asset or not asset.get("browser_download_url"):
+            self.show_update_instructions("source")
+            return
+        self._set_status("Downloading launcher update...")
+        GLib.idle_add(self.progress.set_visible, True)
+
+        def worker():
+            try:
+                import tempfile
+                import zipfile
+                from pathlib import Path
+
+                tmp = Path(tempfile.mkdtemp(prefix="eglantine-launcher-update-"))
+                zpath = tmp / "update.zip"
+                download_url(
+                    asset["browser_download_url"],
+                    zpath,
+                    progress_cb=lambda f: GLib.idle_add(self._set_progress, f),
+                )
+                staged = tmp / "new"
+                with zipfile.ZipFile(zpath) as z:
+                    z.extractall(staged)
+                # The zip wraps the COLLECT dir; descend if needed.
+                candidates = list(staged.glob("*/eglantine-launcher.exe"))
+                src = candidates[0].parent if candidates else staged
+                install_dir = windows_install_dir()
+                script = tmp / "updater.cmd"
+                script.write_text(build_windows_updater(str(install_dir), str(src)), encoding="utf-8")
+                GLib.idle_add(self.progress.set_visible, False)
+                self._set_status("Update downloaded - restarting...")
+                GLib.idle_add(self._spawn_windows_updater, str(script))
+            except Exception as e:
+                GLib.idle_add(self.progress.set_visible, False)
+                GLib.idle_add(self._show_update_error, f"Automatic update failed: {e}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _spawn_windows_updater(self, script):
+        import os
+        import subprocess
+
+        try:
+            flags = getattr(subprocess, "DETACHED_PROCESS", 0)
+            subprocess.Popen(
+                ["cmd", "/c", script, str(os.getpid())],
+                creationflags=flags,
+                close_fds=True,
+            )
+            self._force_quit = True
+            self.close()
+        except Exception as e:
+            self._show_update_error(f"Automatic update failed: {e}")
+        return False
+
+    def _show_update_error(self, message):
+        dialog = Adw.MessageDialog.new(self, "Update failed", message)
+        if self._launcher_update_url:
+            dialog.add_response("open-release", "Open release page")
+        dialog.add_response("close", "Close")
+        dialog.set_close_response("close")
+
+        def _resp(d, resp):
+            if resp == "open-release" and self._launcher_update_url:
+                open_url(self._launcher_update_url)
+            try:
+                d.close()
+            except Exception:
+                pass
+
+        dialog.connect("response", _resp)
+        dialog.present()
+        return False
 
     def _save_choices(self):
         info = self._current_info()

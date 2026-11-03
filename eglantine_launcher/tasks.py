@@ -1168,6 +1168,192 @@ def _in_flatpak():
     return bool(os.environ.get("FLATPAK_ID"))
 
 
+LAUNCHER_REPO = "SavageCore/eglantine-launcher"
+LAUNCHER_API_LATEST = f"https://api.github.com/repos/{LAUNCHER_REPO}/releases/latest"
+REPOS_PAGE = "https://savagecore.github.io/eglantine-launcher/"
+FLATPAK_APP_ID = "dev.savagecore.EglantineLauncher"
+DNF_REPO_PATH = "/etc/yum.repos.d/eglantine-launcher.repo"
+APT_SOURCE_PATH = "/etc/apt/sources.list.d/eglantine-launcher.list"
+APPIMAGE_ASSET_NAME = "eglantine-launcher-x86_64.AppImage"
+WINDOWS_ASSET_NAME = "eglantine-launcher-windows.zip"
+UPDATE_COMMANDS = {
+    "dnf": "sudo dnf upgrade eglantine-launcher",
+    "apt": "sudo apt update && sudo apt install eglantine-launcher",
+    "flatpak": f"flatpak update {FLATPAK_APP_ID}",
+}
+
+
+def detect_install_method():
+    """Return how this copy of the launcher was installed.
+
+    One of "windows", "flatpak", "appimage", "dnf", "apt",
+    "manual-pkg" (standalone .deb/.rpm with no repo configured) or
+    "source" (git checkout, pip, anything else).
+    """
+    if getattr(sys, "frozen", False) or is_windows():
+        return "windows"
+    if os.environ.get("FLATPAK_ID"):
+        return "flatpak"
+    if os.environ.get("APPIMAGE"):
+        return "appimage"
+    try:
+        here = str(Path(__file__).resolve())
+    except Exception:
+        return "source"
+    if here.startswith("/app/"):
+        return "flatpak"
+    if "/usr/lib/eglantine-launcher" in here:
+        if Path(DNF_REPO_PATH).exists():
+            return "dnf"
+        if Path(APT_SOURCE_PATH).exists():
+            return "apt"
+        return "manual-pkg"
+    return "source"
+
+
+def launcher_update_asset(assets, method):
+    """Pick the release asset dict for a one-click update, or None."""
+    if not assets:
+        return None
+    if method == "appimage":
+        for a in assets:
+            if a.get("name") == APPIMAGE_ASSET_NAME:
+                return a
+        for a in assets:
+            if str(a.get("name", "")).endswith(".AppImage"):
+                return a
+        return None
+    if method == "windows":
+        for a in assets:
+            if a.get("name") == WINDOWS_ASSET_NAME:
+                return a
+        for a in assets:
+            if str(a.get("name", "")).endswith(".zip") and "windows" in str(a.get("name", "")).lower():
+                return a
+        return None
+    return None
+
+
+def self_update_dialog_text(method, tag):
+    """Return (title, body) for the update dialog for an install method."""
+    title = f"Launcher update available: {tag}"
+    if method == "dnf":
+        body = (
+            "This copy is managed by dnf, so update it from the terminal:\n\n"
+            f"{UPDATE_COMMANDS['dnf']}\n\n"
+            "Do not download files from GitHub for this install."
+        )
+    elif method == "apt":
+        body = (
+            "This copy is managed by apt, so update it from the terminal:\n\n"
+            f"{UPDATE_COMMANDS['apt']}\n\n"
+            "Do not download files from GitHub for this install."
+        )
+    elif method == "flatpak":
+        body = (
+            "This copy is managed by Flatpak, so update it from the terminal:\n\n"
+            f"{UPDATE_COMMANDS['flatpak']}\n\n"
+            "Do not download files from GitHub for this install."
+        )
+    elif method == "manual-pkg":
+        body = (
+            "This copy was installed from a standalone package file, so it "
+            "cannot update itself.\n\n"
+            "For automatic updates, set up the package repo once:\n"
+            f"{REPOS_PAGE}\n\n"
+            "Or download the new package from the release page and install it manually."
+        )
+    else:
+        body = (
+            "Download the new release and install it manually.\n\n"
+            "Tip: the dnf/apt repos and the Flatpak remote update automatically - "
+            "see:\n"
+            f"{REPOS_PAGE}"
+        )
+    return title, body
+
+
+def download_url(url, dest, progress_cb=None, timeout=120):
+    """Download url to dest (Path). progress_cb, if given, gets a 0-1 float."""
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    req = urllib.request.Request(url, headers={"User-Agent": "eglantine-launcher"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        total = r.headers.get("Content-Length")
+        total = int(total) if total and str(total).isdigit() else 0
+        done = 0
+        with open(dest, "wb") as f:
+            while True:
+                chunk = r.read(1024 * 256)
+                if not chunk:
+                    break
+                f.write(chunk)
+                done += len(chunk)
+                if progress_cb and total:
+                    try:
+                        progress_cb(min(1.0, done / total))
+                    except Exception:
+                        pass
+    return dest
+
+
+def stage_appimage_swap(current, staged):
+    """Atomically replace the running AppImage with a downloaded one."""
+    staged = Path(staged)
+    os.chmod(staged, 0o755)
+    os.replace(staged, current)
+    return Path(current)
+
+
+def build_windows_updater(install_dir, staged_dir, exe_name="eglantine-launcher.exe"):
+    """Return a cmd script that swaps in a staged Windows update.
+
+    The app spawns this detached and quits; the script waits for the
+    parent PID (%1), mirrors staged_dir over install_dir, restarts the
+    exe, removes the staging dir and deletes itself.
+    """
+    return (
+        "@echo off\r\n"
+        "set PID=%1\r\n"
+        ":wait\r\n"
+        'tasklist /FI "PID eq %PID%" 2>nul | find "%PID%" >nul && '
+        "(timeout /t 1 /nobreak >nul & goto wait)\r\n"
+        f'robocopy "{staged_dir}" "{install_dir}" /MIR /NJH /NJS /NDL\r\n'
+        f'start "" "{install_dir}\\{exe_name}"\r\n'
+        f'rmdir /s /q "{staged_dir}"\r\n'
+        'del "%~f0"\r\n'
+    )
+
+
+def windows_install_dir():
+    """Install dir of the frozen Windows build (the COLLECT folder)."""
+    return Path(sys.executable).resolve().parent
+
+
+def open_url(url):
+    """Open url in a browser. Works on Windows, Linux and in the Flatpak sandbox."""
+    try:
+        if _in_flatpak() and shutil.which("flatpak-spawn"):
+            subprocess.Popen(["flatpak-spawn", "--host", "xdg-open", url])
+            return True
+        if is_windows():
+            try:
+                os.startfile(url)  # noqa: S606
+                return True
+            except Exception:
+                pass
+        import webbrowser
+
+        webbrowser.open(url)
+        return True
+    except Exception:
+        try:
+            subprocess.Popen(["xdg-open", url])
+            return True
+        except Exception:
+            return False
+
+
 def _host_which(name):
     """Locate a tool, on the host when sandboxed."""
     if not _in_flatpak():

@@ -3,14 +3,18 @@
 <head><meta charset="utf-8"><title>Eglantine Launcher repos</title></head>
 <body>
 <h1>Eglantine Launcher package repos</h1>
-<h2>Fedora / Nobara (dnf)</h2>
+<p>Set one of these up once for automatic updates. Standalone
+<code>.deb</code> / <code>.rpm</code> / <code>.flatpak</code> files from the
+releases page do <strong>not</strong> update themselves - reinstall them by
+hand each release, or switch to a repo below.</p>
+<h2>Fedora / Nobara (dnf) - update with <code>sudo dnf upgrade eglantine-launcher</code></h2>
 <pre>sudo rpm --import https://savagecore.github.io/eglantine-launcher/dnf/RPM-GPG-KEY-eglantine-launcher
 sudo curl -o /etc/yum.repos.d/eglantine-launcher.repo https://savagecore.github.io/eglantine-launcher/dnf/eglantine-launcher.repo
 sudo dnf install eglantine-launcher</pre>
-<h2>Debian / Ubuntu (apt)</h2>
+<h2>Debian / Ubuntu (apt) - update with <code>sudo apt update &amp;&amp; sudo apt install eglantine-launcher</code></h2>
 <pre>echo "deb [trusted=yes] https://savagecore.github.io/eglantine-launcher/apt/ /" | sudo tee /etc/apt/sources.list.d/eglantine-launcher.list
 sudo apt update &amp;&amp; sudo apt install eglantine-launcher</pre>
-<h2>Flatpak</h2>
+<h2>Flatpak - update with <code>flatpak update dev.savagecore.EglantineLauncher</code></h2>
 <pre>flatpak remote-add --if-not-exists eglantine-launcher https://savagecore.github.io/eglantine-launcher/flatpak/eglantine-launcher.flatpakref
 flatpak install eglantine-launcher dev.savagecore.EglantineLauncher</pre>
 </body>

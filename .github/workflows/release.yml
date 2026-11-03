@@ -46,6 +46,36 @@ jobs:
             echo ""
             echo "## Downloads"
             echo ""
+            echo "### Recommended: package repos (automatic updates)"
+            echo ""
+            echo "Set one of these up once and update with your package manager -"
+            echo "no manual downloads needed afterwards:"
+            echo ""
+            echo "- **Fedora / Nobara (dnf):**"
+            echo '  ```'
+            echo "  sudo rpm --import https://savagecore.github.io/eglantine-launcher/dnf/RPM-GPG-KEY-eglantine-launcher"
+            echo "  sudo curl -o /etc/yum.repos.d/eglantine-launcher.repo https://savagecore.github.io/eglantine-launcher/dnf/eglantine-launcher.repo"
+            echo "  sudo dnf install eglantine-launcher"
+            echo '  ```'
+            echo "  Update with \`sudo dnf upgrade eglantine-launcher\`."
+            echo "- **Debian / Ubuntu (apt):**"
+            echo '  ```'
+            echo '  echo "deb [trusted=yes] https://savagecore.github.io/eglantine-launcher/apt/ /" | sudo tee /etc/apt/sources.list.d/eglantine-launcher.list'
+            echo "  sudo apt update && sudo apt install eglantine-launcher"
+            echo '  ```'
+            echo "- **Flatpak (sandboxed):**"
+            echo '  ```'
+            echo "  flatpak remote-add --if-not-exists eglantine-launcher https://savagecore.github.io/eglantine-launcher/flatpak/eglantine-launcher.flatpakref"
+            echo "  flatpak install eglantine-launcher dev.savagecore.EglantineLauncher"
+            echo '  ```'
+            echo "  Update with \`flatpak update dev.savagecore.EglantineLauncher\`."
+            echo ""
+            echo "### Manual downloads (no automatic updates)"
+            echo ""
+            echo "These do **not** update themselves. The AppImage and Windows builds"
+            echo "can update from inside the app; standalone \`.deb\` / \`.rpm\` / \`.flatpak\`"
+            echo "files must be reinstalled by hand each release - prefer a repo above."
+            echo ""
             echo "| Platform | Download |"
             echo "|----------|----------|"
             echo "| Windows | [Portable .zip](${BASE}/eglantine-launcher-windows.zip) |"
