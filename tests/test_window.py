@@ -742,3 +742,271 @@ def test_token_status_timeout_keeps_newer_message(needs_display, fake_home):
         assert window._token_status_label.get_visible() is False
     finally:
         window.close()
+
+
+def _pr_cfg():
+    return {
+        "id": "pr-r-366-abcdef",
+        "name": "Fix shaders (#366)",
+        "source_url": "https://github.com/o/r.git",
+        "branch": "pr-366",
+        "releases_url": None,
+        "is_pr": True,
+        "pr_url": "https://github.com/o/r/pull/366",
+        "pr_number": 366,
+        "pr_owner": "o",
+        "pr_repo": "r",
+        "pr_title": "Fix shaders",
+        "pr_state": "open",
+        "pr_head_sha": "a" * 40,
+    }
+
+
+def test_pr_menu_action_exists(needs_display, fake_home):
+    window = LauncherWindow(_make_app())
+    try:
+        assert window.has_action("pr-builds")
+    finally:
+        window.close()
+
+
+def test_update_mode_options_pr_is_source_only(needs_display, fake_home):
+    from eglantine_launcher.config import load, save
+
+    cfg = load()
+    cfg["source_enabled"] = True
+    save(cfg)
+    window = LauncherWindow(_make_app())
+    try:
+        window.cfg["source_enabled"] = True
+        window._update_mode_options(_pr_cfg())
+        model = window.mode_row.get_model()
+        assert model.get_n_items() == 1
+        assert model.get_string(0) == "Build from source"
+        assert window.mode_row.get_sensitive() is True
+        window.cfg["source_enabled"] = False
+        window._update_mode_options(_pr_cfg())
+        assert window.mode_row.get_sensitive() is False
+    finally:
+        window.close()
+
+
+def test_save_choices_pr_forces_source(needs_display, fake_home):
+    from eglantine_launcher.config import load, save
+
+    cfg = load()
+    pr = _pr_cfg()
+    cfg["projects"].append(pr)
+    cfg["project"] = pr["id"]
+    cfg["source_enabled"] = False
+    save(cfg)
+    window = LauncherWindow(_make_app())
+    try:
+        window._save_choices()
+        assert window.cfg["mode"] == "source"
+    finally:
+        window.close()
+
+
+def test_refresh_pr_versions_shows_cached_head(needs_display, fake_home, monkeypatch):
+    import eglantine_launcher.ui.window as winmod
+
+    def _offline(*a, **k):
+        raise Exception("offline")
+
+    monkeypatch.setattr(winmod, "fetch_pr_info", _offline)
+    window = LauncherWindow(_make_app())
+    try:
+        window._refresh_pr_versions(_pr_cfg())
+        model = window.version_drop.get_model()
+        assert model.get_n_items() == 2  # Latest + head
+        assert window._commit_shas == ["a" * 40]
+        assert window._latest_commit == "a" * 40
+    finally:
+        window.close()
+
+
+def test_refresh_pr_versions_updates_state(needs_display, fake_home, monkeypatch):
+    import time
+
+    import eglantine_launcher.ui.window as winmod
+    from eglantine_launcher.config import load
+
+    details = {
+        "title": "Fix shaders v2",
+        "state": "merged",
+        "head_sha": "b" * 40,
+        "base_clone_url": "https://github.com/o/r.git",
+    }
+    monkeypatch.setattr(winmod, "fetch_pr_info", lambda *a, **k: details)
+    from gi.repository import GLib
+
+    monkeypatch.setattr(GLib, "idle_add", lambda fn, *a, **k: fn(*a))
+    from eglantine_launcher.config import save
+
+    seed = load()
+    seed_pr = _pr_cfg()
+    seed["projects"].append(seed_pr)
+    save(seed)
+    window = LauncherWindow(_make_app())
+    try:
+        window._refresh_pr_versions(dict(seed_pr))
+        for _ in range(100):
+            if any(p.get("pr_head_sha") == "b" * 40 for p in load()["projects"]):
+                break
+            time.sleep(0.05)
+        assert any(p.get("pr_state") == "merged" for p in window.cfg["projects"] if p.get("is_pr"))
+    finally:
+        window.close()
+
+
+def test_already_built_uses_per_project_value(needs_display, fake_home, tmp_path):
+    from eglantine_launcher.config import save
+
+    window = LauncherWindow(_make_app())
+    try:
+        pr = _pr_cfg()
+        window.cfg["projects"].append(pr)
+        window.cfg["project"] = pr["id"]
+        window.cfg["source_dir"] = str(tmp_path / "src")
+        window.cfg["last_source_commit"] = "stale"
+        for p in window.cfg["projects"]:
+            if p["id"] == pr["id"]:
+                p["last_built_commit"] = "a" * 40
+        save(window.cfg)
+        binary = tmp_path / "src" / pr["id"] / "build" / "release" / "bin"
+        binary.mkdir(parents=True)
+        (binary / "eglantine").write_bytes(b"x")
+        assert window._already_built("a" * 40) is True
+        assert window._already_built("b" * 40) is False
+    finally:
+        window.close()
+
+
+def test_launch_pr_selects_and_launches(needs_display, fake_home, monkeypatch):
+    from eglantine_launcher.config import load, save
+
+    cfg = load()
+    pr = _pr_cfg()
+    cfg["projects"].append(pr)
+    save(cfg)
+    window = LauncherWindow(_make_app())
+    try:
+        launched = []
+        monkeypatch.setattr(window, "on_launch", lambda *a: launched.append(True))
+        window._launch_pr(pr["id"])
+        assert launched == [True]
+        assert window.cfg["project"] == pr["id"]
+        assert load()["project"] == pr["id"]
+    finally:
+        window.close()
+
+
+def test_settings_hides_pr_builds(needs_display, fake_home):
+    from eglantine_launcher.config import load, save
+    from eglantine_launcher.ui.settings_window import SettingsWindow
+
+    cfg = load()
+    cfg["projects"].append(_pr_cfg())
+    save(cfg)
+    window = SettingsWindow(None)
+    try:
+        assert len(window._source_rows) == 2
+        assert all(not getattr(r, "project", {}).get("is_pr") for r in window._source_rows)
+    finally:
+        window.close()
+
+
+def test_pr_builds_dialog_lists_and_reports_state(needs_display, fake_home, monkeypatch):
+    import eglantine_launcher.ui.pr_dialog as prmod
+    from eglantine_launcher.config import load, save
+
+    cfg = load()
+    pr = _pr_cfg()
+    pr["pr_state"] = "merged"
+    cfg["projects"].append(pr)
+    save(cfg)
+
+    def _offline(*a, **k):
+        raise Exception("offline")
+
+    monkeypatch.setattr(prmod, "fetch_pr_info", _offline)
+    dialog = prmod.PRBuildsDialog(None)
+    try:
+        assert len(dialog._rows) == 1
+        assert "merged" in dialog._rows[0].get_subtitle()
+        assert "safe to delete" in dialog._rows[0].get_subtitle()
+        assert dialog.empty_label.get_visible() is False
+    finally:
+        dialog.close()
+
+
+def test_pr_edit_dialog_defaults_name_from_title(needs_display, fake_home, monkeypatch):
+    import eglantine_launcher.ui.pr_dialog as prmod
+
+    details = {
+        "title": "Cool fix",
+        "state": "open",
+        "head_sha": "d" * 40,
+        "number": 12,
+        "owner": "o",
+        "repo": "r",
+        "base_clone_url": "https://github.com/o/r.git",
+    }
+    monkeypatch.setattr(prmod, "fetch_pr_info", lambda *a, **k: details)
+    from gi.repository import GLib
+
+    monkeypatch.setattr(GLib, "idle_add", lambda fn, *a, **k: fn(*a))
+    saved = {}
+
+    def on_save(project, old_id):
+        saved["project"] = project
+
+    dialog = prmod.PREditDialog(None, None, on_save, cfg={})
+    try:
+        dialog.url_entry.set_text("https://github.com/o/r/pull/12")
+        dialog._lookup("https://github.com/o/r/pull/12", dialog._lookup_seq)
+        assert dialog.name_entry.get_text() == "Cool fix (#12)"
+        assert "open" in dialog.status_label.get_label()
+    finally:
+        dialog.close()
+
+
+def test_pr_delete_removes_entry_and_data(needs_display, fake_home, tmp_path, monkeypatch):
+    import gi
+
+    gi.require_version("Adw", "1")
+    from gi.repository import Adw, Gtk
+
+    import eglantine_launcher.ui.pr_dialog as prmod
+    from eglantine_launcher.config import load, save
+
+    cfg = load()
+    pr = _pr_cfg()
+    cfg["projects"].append(pr)
+    cfg["project"] = pr["id"]
+    cfg["source_dir"] = str(tmp_path / "src")
+    cfg["install_dir"] = str(tmp_path / "install")
+    save(cfg)
+    src = tmp_path / "src" / pr["id"]
+    (src / ".git").mkdir(parents=True)
+
+    def _offline(*a, **k):
+        raise Exception("offline")
+
+    monkeypatch.setattr(prmod, "fetch_pr_info", _offline)
+    dialog = prmod.PRBuildsDialog(None)
+    try:
+        changed = []
+        dialog.on_changed = lambda: changed.append(True)
+        dialog._on_delete_clicked(None, dict(pr, id=pr["id"], name=pr["name"]))
+        dlg = next(w for w in Gtk.Window.list_toplevels() if isinstance(w, Adw.MessageDialog))
+        try:
+            dlg.response("delete")
+        finally:
+            dlg.close()
+        assert pr["id"] not in [p["id"] for p in load()["projects"]]
+        assert not src.exists()
+        assert changed == [True]
+    finally:
+        dialog.close()

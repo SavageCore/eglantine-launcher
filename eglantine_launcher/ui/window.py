@@ -24,15 +24,20 @@ from ..tasks import (
     check_release,
     detect_install_method,
     download_url,
+    fetch_pr_info,
     fetch_remote_sources,
     find_release_for_commit,
+    get_project_last_built,
     install_shortcut,
+    is_pr_project,
     is_windows,
     launch,
     launcher_update_asset,
     list_commits,
     list_releases,
     open_url,
+    pr_version_entries,
+    refresh_pr_project,
     release_appimage_path,
     release_platforms,
     remove_shortcut,
@@ -48,6 +53,7 @@ from ..tasks import arch as get_arch
 from ..tray import hide_to_tray, minimize_to_taskbar
 from ..tray import restore as restore_window
 from .deps_dialog import DepsDialog
+from .pr_dialog import PRBuildsDialog
 from .settings_window import SettingsWindow
 
 
@@ -110,6 +116,9 @@ class LauncherWindow(Adw.ApplicationWindow):
         folder_action = Gio.SimpleAction.new("folder", None)
         folder_action.connect("activate", self.on_open_folder)
         self.add_action(folder_action)
+        pr_action = Gio.SimpleAction.new("pr-builds", None)
+        pr_action.connect("activate", self.on_pr_builds)
+        self.add_action(pr_action)
         self._build_menu("Install Shortcut")
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -319,6 +328,7 @@ class LauncherWindow(Adw.ApplicationWindow):
     def _build_menu(self, shortcut_label):
         menu = Gio.Menu()
         menu.append("Settings", "win.settings")
+        menu.append("PR Builds...", "win.pr-builds")
         menu.append(shortcut_label, "win.shortcut")
         menu.append("Open Data Folder", "win.folder")
         menu.append("About", "win.about")
@@ -531,6 +541,9 @@ class LauncherWindow(Adw.ApplicationWindow):
         info = self._current_info()
         cfg["project"] = info.get("id", cfg.get("project"))
         self._update_mode_options(info)
+        if is_pr_project(info):
+            self._refresh_pr_versions(dict(info))
+            return
         is_release = (self.mode_row.get_selected() == 0) and self._release_available(info)
         if is_release:
 
@@ -592,9 +605,81 @@ class LauncherWindow(Adw.ApplicationWindow):
 
             threading.Thread(target=worker, daemon=True).start()
 
+    def _refresh_pr_versions(self, info):
+        pid = info.get("id")
+        cached_sha = info.get("pr_head_sha") or ""
+        cached_title = info.get("pr_title") or ""
+        cached_state = info.get("pr_state") or "open"
+        if cached_sha:
+            have = set(self.cfg.get("built_commits", []))
+            installed = get_project_last_built(self.cfg, info)
+            try:
+                binary = source_dir(self.cfg) / "build" / "release" / "bin"
+                binary = binary / ("eglantine.exe" if is_windows() else "eglantine")
+                present = binary.exists()
+            except Exception:
+                present = False
+            labels, shas, subs, latest = pr_version_entries(
+                cached_title, cached_sha, cached_state, have, installed, present
+            )
+            labels.insert(0, "Latest" + (" ✓" if latest in have else ""))
+            self._set_version_model(labels, [], shas, subs, pid, False, [latest], latest)
+
+        def worker():
+            try:
+                details = fetch_pr_info(info.get("pr_url", ""), self.cfg)
+            except Exception:
+                if not cached_sha:
+                    GLib.idle_add(self._set_version_model, ["Latest"], [], [])
+                return
+            for p in self.cfg.get("projects", []):
+                if p.get("id") == pid:
+                    refresh_pr_project(p, details)
+                    break
+            save_config(self.cfg)
+            try:
+                binary = source_dir(self.cfg) / "build" / "release" / "bin"
+                binary = binary / ("eglantine.exe" if is_windows() else "eglantine")
+                present = binary.exists()
+            except Exception:
+                present = False
+            have = set(self.cfg.get("built_commits", []))
+            installed = get_project_last_built(self.cfg, info)
+            labels, shas, subs, latest = pr_version_entries(
+                details.get("title", ""),
+                details.get("head_sha", ""),
+                details.get("state", ""),
+                have,
+                installed,
+                present,
+            )
+            if not shas:
+                GLib.idle_add(self._set_version_model, ["Latest"], [], [])
+                return
+            latest_tick = " ✓" if latest in have else ""
+            labels.insert(0, "Latest" + latest_tick)
+            GLib.idle_add(
+                self._set_version_model,
+                labels,
+                [],
+                shas,
+                subs,
+                pid,
+                False,
+                [latest] if latest else [],
+                latest,
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _update_mode_options(self, info):
         self._updating = True
         try:
+            if is_pr_project(info):
+                self.mode_row.set_model(Gtk.StringList.new(["Build from source"]))
+                self.mode_row.set_selected(0)
+                self.mode_row.set_sensitive(bool(self.cfg.get("source_enabled", True)))
+                return
             if not self.cfg.get("source_enabled", True):
                 self.mode_row.set_model(Gtk.StringList.new(["Release (download)"]))
                 self.mode_row.set_selected(0)
@@ -833,7 +918,7 @@ class LauncherWindow(Adw.ApplicationWindow):
     def _already_built(self, commit):
         src = source_dir(self.cfg)
         binary = src / "build" / "release" / "bin" / ("eglantine.exe" if is_windows() else "eglantine")
-        return self.cfg.get("last_source_commit") == commit and binary.exists()
+        return get_project_last_built(self.cfg) == commit and binary.exists()
 
     def _ask_download_or_build(self, tag, sha):
         import threading
@@ -949,7 +1034,9 @@ class LauncherWindow(Adw.ApplicationWindow):
                     )
                     launched = self._launch_now(binary)
                     return
-                tag = find_release_for_commit(self.cfg, resolved) if resolved else None
+                tag = None
+                if not is_pr_project(info):
+                    tag = find_release_for_commit(self.cfg, resolved) if resolved else None
                 if tag:
                     if self.auto or self._ask_download_or_build(tag, resolved):
                         appimage = check_release(
@@ -1231,7 +1318,9 @@ class LauncherWindow(Adw.ApplicationWindow):
     def _save_choices(self):
         info = self._current_info()
         self.cfg["project"] = info.get("id", self.cfg.get("project"))
-        if not self.cfg.get("source_enabled", True):
+        if is_pr_project(info):
+            self.cfg["mode"] = "source"
+        elif not self.cfg.get("source_enabled", True):
             self.cfg["mode"] = "release"
         else:
             # persist only the explicit choice; never flip it due to a failed release check
@@ -1242,6 +1331,25 @@ class LauncherWindow(Adw.ApplicationWindow):
     def on_settings(self, *_args):
         SettingsWindow(self, on_changed=self.reload_projects).present()
 
+    def on_pr_builds(self, *_args):
+        PRBuildsDialog(self, on_changed=self.reload_projects, on_launch=self._launch_pr).present()
+
+    def _launch_pr(self, pid):
+        ids = [p.get("id") for p in self.cfg.get("projects", [])]
+        if pid not in ids:
+            self.cfg = load_config()
+            ids = [p.get("id") for p in self.cfg.get("projects", [])]
+        if pid in ids:
+            self._updating = True
+            try:
+                self.project_row.set_selected(ids.index(pid))
+            finally:
+                self._updating = False
+            self._save_choices()
+            self._refresh_shortcut_btn()
+            self._refresh_versions()
+            self.on_launch()
+
     def reload_projects(self):
         # Settings saves a new config to disk; re-read it so toggles apply instantly
         self.cfg = load_config()
@@ -1250,6 +1358,7 @@ class LauncherWindow(Adw.ApplicationWindow):
             model = Gtk.StringList.new([p.get("name", p.get("id")) for p in self.cfg.get("projects", [])])
             self.project_row.set_model(model)
             ids = [p.get("id") for p in self.cfg.get("projects", [])]
+            self._project_ids = ids
             cur = self.cfg.get("project")
             if cur in ids:
                 self.project_row.set_selected(ids.index(cur))

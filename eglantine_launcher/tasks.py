@@ -78,6 +78,35 @@ def project_info(cfg):
     return projects[0] if projects else {}
 
 
+def is_pr_project(info):
+    """True for one-off PR entries (stored as projects, built from source only)."""
+    return bool((info or {}).get("is_pr"))
+
+
+def get_project_last_built(cfg, info=None):
+    """Last built commit for a project (per-project, with global fallback).
+
+    Older configs only have the global last_source_commit; new builds record
+    both, so the per-project value wins when present.
+    """
+    info = info if info is not None else project_info(cfg)
+    if (info or {}).get("last_built_commit"):
+        return info.get("last_built_commit")
+    return cfg.get("last_source_commit")
+
+
+def record_source_build(cfg, commit):
+    """Record a successful source build globally and on the current project."""
+    cfg["last_source_commit"] = commit
+    _record(cfg, "built_commits", commit)
+    pid = cfg.get("project")
+    for p in cfg.get("projects", []):
+        if p.get("id") == pid:
+            p["last_built_commit"] = commit
+            break
+    save_config(cfg)
+
+
 def is_windows():
     return sys.platform.startswith("win")
 
@@ -175,6 +204,214 @@ def parse_repo(source_url):
     if m:
         return m.group(1).lower(), m.group(2), m.group(3)
     return None, None, None
+
+
+def parse_pr_url(pr_url):
+    """Parse a PR web URL into {host_kind, web_host, scheme, owner, repo, number}.
+
+    Accepts GitHub /pull/N and Forgejo /pull/N or /pulls/N web URLs, with
+    optional trailing path (/files, /commits), query or fragment. Returns
+    None when the URL is not a recognized PR link.
+    """
+    import re
+
+    s = (pr_url or "").strip()
+    if not s:
+        return None
+    # strip query/fragment for matching, keep scheme/host from the URL itself
+    bare = re.split(r"[?#]", s, maxsplit=1)[0].rstrip("/")
+    m = re.match(
+        r"(https?)://([^/]+)/([^/]+)/([^/]+?)/(?:pull|pulls)/(\d+)(?:/.*)?$",
+        bare,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+    scheme, host, owner, repo, number = (
+        m.group(1).lower(),
+        m.group(2).lower(),
+        m.group(3),
+        m.group(4),
+        m.group(5),
+    )
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    if not owner or not repo or not number.isdigit():
+        return None
+    host_kind = "github" if host == "github.com" else "forgejo"
+    if host_kind == "github":
+        canonical = f"https://github.com/{owner}/{repo}/pull/{int(number)}"
+    else:
+        canonical = f"{scheme}://{host}/{owner}/{repo}/pulls/{int(number)}"
+    return {
+        "host_kind": host_kind,
+        "web_host": host,
+        "scheme": scheme,
+        "owner": owner,
+        "repo": repo,
+        "number": int(number),
+        "canonical": canonical,
+    }
+
+
+def pr_api_url(parsed):
+    """API URL for PR details, or None when it cannot be derived."""
+    if not parsed:
+        return None
+    owner, repo, number = parsed["owner"], parsed["repo"], parsed["number"]
+    if parsed["host_kind"] == "github":
+        return f"https://api.github.com/repos/{owner}/{repo}/pulls/{number}"
+    return f"{parsed['scheme']}://{parsed['web_host']}/api/v1/repos/{owner}/{repo}/pulls/{number}"
+
+
+def pr_default_name(details=None, number=None, owner=None, repo=None):
+    """Default display name for a PR build: '{title} (#N)'."""
+    title = (details or {}).get("title", "") if isinstance(details, dict) else ""
+    number = number if number is not None else (details or {}).get("number")
+    title = (title or "").strip()
+    if title and number:
+        return f"{title} (#{number})"
+    if title:
+        return title
+    if owner and repo and number:
+        return f"{owner}/{repo} #{number}"
+    if number:
+        return f"PR #{number}"
+    return "PR build"
+
+
+def fetch_pr_info(pr_url, cfg=None, timeout=20):
+    """Fetch PR details from the GitHub or Forgejo API.
+
+    Returns {title, state, merged, head_sha, head_ref, head_clone_url,
+    base_clone_url, base_branch, number, owner, repo, host_kind, web_host,
+    pr_url, api_url}. state is one of 'open', 'closed', 'merged'.
+    Raises RuntimeError for bad URLs and propagates API errors.
+    """
+    parsed = parse_pr_url(pr_url)
+    if parsed is None:
+        raise RuntimeError("That does not look like a PR link (expected .../pull/NNN).")
+    url = pr_api_url(parsed)
+    data = api_get_json(url, cfg, timeout=timeout)
+    if not isinstance(data, dict):
+        raise RuntimeError("Unexpected PR response from the API.")
+    title = data.get("title") or ""
+    raw_state = str(data.get("state") or "").lower()
+    merged = bool(data.get("merged") or data.get("merged_at"))
+    if merged:
+        state = "merged"
+    elif raw_state in ("open", "closed", "merged"):
+        state = raw_state
+    else:
+        state = raw_state or "open"
+    head = data.get("head") if isinstance(data.get("head"), dict) else {}
+    base = data.get("base") if isinstance(data.get("base"), dict) else {}
+    head_sha = head.get("sha") or data.get("head_sha") or ""
+    head_ref = head.get("ref") or head.get("label") or ""
+    head_repo = head.get("repo") if isinstance(head.get("repo"), dict) else {}
+    head_clone = head_repo.get("clone_url") or head_repo.get("ssh_url") or ""
+    base_repo = base.get("repo") if isinstance(base.get("repo"), dict) else {}
+    base_clone = (
+        base_repo.get("clone_url")
+        or f"{parsed['scheme']}://{parsed['web_host']}/{parsed['owner']}/{parsed['repo']}.git"
+    )
+    base_branch = base.get("ref") or base.get("label") or ""
+    return {
+        "title": title if isinstance(title, str) else "",
+        "state": state,
+        "merged": merged,
+        "head_sha": head_sha if isinstance(head_sha, str) else "",
+        "head_ref": head_ref if isinstance(head_ref, str) else "",
+        "head_clone_url": head_clone if isinstance(head_clone, str) else "",
+        "base_clone_url": base_clone if isinstance(base_clone, str) else "",
+        "base_branch": base_branch if isinstance(base_branch, str) else "",
+        "number": parsed["number"],
+        "owner": parsed["owner"],
+        "repo": parsed["repo"],
+        "host_kind": parsed["host_kind"],
+        "web_host": parsed["web_host"],
+        "pr_url": parsed["canonical"],
+        "api_url": url,
+    }
+
+
+def make_pr_project(name, pr_url, details=None, existing=None):
+    """Build a project dict for a one-off PR build (source-only).
+
+    existing preserves the id/last_built_commit when editing. details is the
+    fetch_pr_info() result used for base URL, title, state and head SHA.
+    """
+    import uuid
+
+    details = details if isinstance(details, dict) else {}
+    parsed = parse_pr_url(pr_url)
+    if parsed is None:
+        raise RuntimeError("That does not look like a PR link (expected .../pull/NNN).")
+    number = parsed["number"]
+    base_clone = details.get("base_clone_url") or (
+        f"{parsed['scheme']}://{parsed['web_host']}/{parsed['owner']}/{parsed['repo']}.git"
+    )
+    title = (details.get("title") or "").strip()
+    if existing and existing.get("id"):
+        pid = existing["id"]
+    else:
+        slug = "".join(c.lower() if c.isalnum() else "-" for c in parsed["repo"]).strip("-")
+        pid = f"pr-{slug}-{number}-{uuid.uuid4().hex[:6]}"
+    project = {
+        "id": pid,
+        "name": (name or "").strip() or pr_default_name(details, number, parsed["owner"], parsed["repo"]),
+        "source_url": base_clone,
+        "branch": f"pr-{number}",
+        "releases_url": None,
+        "include_prerelease": True,
+        "is_pr": True,
+        "pr_url": parsed["canonical"],
+        "pr_number": number,
+        "pr_owner": parsed["owner"],
+        "pr_repo": parsed["repo"],
+        "pr_host": parsed["host_kind"],
+        "pr_title": title,
+        "pr_state": details.get("state") or "open",
+        "pr_head_sha": details.get("head_sha") or "",
+    }
+    if existing and existing.get("last_built_commit"):
+        project["last_built_commit"] = existing["last_built_commit"]
+    return project
+
+
+def refresh_pr_project(project, details):
+    """Fold fresh fetch_pr_info() data into a PR project dict (in place)."""
+    if not isinstance(details, dict):
+        return project
+    if details.get("base_clone_url"):
+        project["source_url"] = details["base_clone_url"]
+    if details.get("title"):
+        project["pr_title"] = details["title"]
+    if details.get("state"):
+        project["pr_state"] = details["state"]
+    if details.get("head_sha"):
+        project["pr_head_sha"] = details["head_sha"]
+    return project
+
+
+def pr_version_entries(title, head_sha, state="", have=None, installed_sha=None, installed_present=False):
+    """Version-dropdown rows for a PR head: (labels, shas, subs, latest_sha)."""
+    have = set(have or [])
+    head_sha = head_sha or ""
+    if not head_sha:
+        return [], [], [], None
+    tick = "✓ " if head_sha in have else ""
+    short = head_sha[:7]
+    first = (title or "").strip().splitlines()[0] if (title or "").strip() else ""
+    state_tag = f" ({state})" if state else ""
+    labels = [f"{tick}{short} {first[:70]}{state_tag}".rstrip()]
+    subs = [f"{head_sha}\n{(title or '').strip()}" if (title or "").strip() else head_sha]
+    shas = [head_sha]
+    if installed_sha and installed_sha not in shas and installed_present:
+        shas.append(installed_sha)
+        labels.append(f"✓ {installed_sha[:7]} (installed build)")
+        subs.append(f"{installed_sha}\nCurrently installed build")
+    return labels, shas, subs, head_sha
 
 
 def _forgejo_api_base(source_url):
@@ -688,6 +925,43 @@ def remove_project_data(cfg, pid):
         pass
 
 
+def remove_pr_project(cfg, pid):
+    """Full cleanup for a deleted PR entry: dirs, shortcut, list entry, build state.
+
+    Reads the checkout HEAD before deleting so built_commits and the global
+    last_source_commit can be pruned. Resets cfg["project"] when it pointed
+    at the deleted entry. Saves and returns True when anything changed.
+    """
+    if not pid:
+        return False
+    projects = cfg.get("projects", [])
+    target = next((p for p in projects if p.get("id") == pid), None)
+    if target is None:
+        return False
+    heads = {h for h in (target.get("last_built_commit"), target.get("pr_head_sha")) if h}
+    source_base = cfg.get("source_dir") or ""
+    if source_base:
+        try:
+            head = _host_check_output(
+                ["git", "-C", str(Path(source_base) / pid), "rev-parse", "HEAD"], text=True
+            ).strip()
+            if head:
+                heads.add(head)
+        except Exception:
+            pass
+    remove_project_data(cfg, pid)
+    cfg["projects"] = [p for p in projects if p.get("id") != pid]
+    if heads:
+        cfg["built_commits"] = [c for c in cfg.get("built_commits", []) if c not in heads]
+        if cfg.get("last_source_commit") in heads:
+            cfg["last_source_commit"] = None
+    if cfg.get("project") == pid:
+        rest = cfg["projects"]
+        cfg["project"] = rest[0].get("id") if rest else None
+    save_config(cfg)
+    return True
+
+
 def dir_size(path):
     """Total file bytes under path (no symlink following). Missing dir -> 0."""
     total = 0
@@ -813,6 +1087,9 @@ def delete_storage_row(cfg, row):
             cfg["built_commits"] = [c for c in cfg.get("built_commits", []) if c != head]
             if cfg.get("last_source_commit") == head:
                 cfg["last_source_commit"] = None
+            for p in cfg.get("projects", []):
+                if p.get("id") == pid and p.get("last_built_commit") == head:
+                    p["last_built_commit"] = None
             save_config(cfg)
         return None
     return "Unknown storage entry."
@@ -885,6 +1162,8 @@ def ensure_source(cfg, status_cb=None, commit=None, cancelled=None):
     info = project_info(cfg)
     src = source_dir(cfg)
     src.parent.mkdir(parents=True, exist_ok=True)
+    if is_pr_project(info):
+        return _ensure_pr_source(cfg, info, src, status_cb, commit, cancelled)
     if not (src / ".git").exists():
         if status_cb:
             status_cb("Cloning source...")
@@ -904,6 +1183,76 @@ def ensure_source(cfg, status_cb=None, commit=None, cancelled=None):
             check=False,
             capture_output=True,
         )
+    commit = _host_check_output(["git", "-C", str(src), "rev-parse", "HEAD"], text=True).strip()
+    return src, commit
+
+
+def _ensure_pr_source(cfg, info, src, status_cb=None, commit=None, cancelled=None):
+    """Checkout a PR head into its isolated source dir.
+
+    Uses the base repo as origin and fetches the PR ref (refs/pull/N/head on
+    both GitHub and Forgejo). Fork-head PRs work because the base repo
+    exposes the pull ref; the head clone URL is never fetched directly.
+    """
+    number = info.get("pr_number")
+    source_url = info.get("source_url")
+    if not number or not source_url:
+        raise RuntimeError("PR entry is missing its number or source URL; edit it and try again.")
+    try:
+        number = int(number)
+    except (TypeError, ValueError):
+        raise RuntimeError("PR entry has an invalid number; edit it and try again.")
+    if not (src / ".git").exists():
+        if status_cb:
+            status_cb(f"Cloning PR #{number} base...")
+        _host_run(["git", "clone", source_url, str(src)], check=True)
+    else:
+        if status_cb:
+            status_cb(f"Fetching PR #{number} updates...")
+        try:
+            current = _host_check_output(
+                ["git", "-C", str(src), "remote", "get-url", "origin"], text=True
+            ).strip()
+        except Exception:
+            current = ""
+        if current and current != source_url:
+            _host_run(["git", "-C", str(src), "remote", "set-url", "origin", source_url], check=True)
+        fetched = False
+        for ref in (f"pull/{number}/head", f"pulls/{number}/head"):
+            try:
+                _host_run(
+                    ["git", "-C", str(src), "fetch", "origin", f"+{ref}:pr-{number}"],
+                    check=True,
+                )
+                fetched = True
+                break
+            except Exception:
+                continue
+        if not fetched:
+            raise RuntimeError(f"Could not fetch PR #{number} (is it still open?).")
+    if not (src / ".git").exists():
+        raise RuntimeError("PR clone failed.")
+    # fresh clones still need the PR ref
+    try:
+        _host_check_output(["git", "-C", str(src), "rev-parse", "--verify", f"pr-{number}"], text=True)
+    except Exception:
+        fetched = False
+        for ref in (f"pull/{number}/head", f"pulls/{number}/head"):
+            try:
+                _host_run(
+                    ["git", "-C", str(src), "fetch", "origin", f"+{ref}:pr-{number}"],
+                    check=True,
+                )
+                fetched = True
+                break
+            except Exception:
+                continue
+        if not fetched:
+            raise RuntimeError(f"Could not fetch PR #{number} (is it still open?).")
+    if cancelled and cancelled():
+        raise BuildCancelled("Build cancelled.")
+    target = commit or info.get("pr_head_sha") or f"pr-{number}"
+    _host_run(["git", "-C", str(src), "checkout", target], check=True)
     commit = _host_check_output(["git", "-C", str(src), "rev-parse", "HEAD"], text=True).strip()
     return src, commit
 
@@ -1024,12 +1373,10 @@ def build_source(cfg, status_cb=None, log_cb=None, commit=None, cancelled=None, 
     src, commit = ensure_source(cfg, status_cb, commit=commit, cancelled=cancelled)
     binary_name = "eglantine.exe" if is_windows() else "eglantine"
     binary = src / "build" / "release" / "bin" / binary_name
-    if cfg.get("last_source_commit") == commit and binary.exists():
+    if get_project_last_built(cfg) == commit and binary.exists():
         if status_cb:
             status_cb("Source already up to date.")
-        cfg["last_source_commit"] = commit
-        _record(cfg, "built_commits", commit)
-        save_config(cfg)
+        record_source_build(cfg, commit)
         return binary
     for tool in ("cmake", "ninja", "git", "g++"):
         if _host_which(tool) is None:
@@ -1152,9 +1499,7 @@ def build_source(cfg, status_cb=None, log_cb=None, commit=None, cancelled=None, 
         if cancelled and cancelled():
             raise BuildCancelled("Build cancelled.")
         raise RuntimeError("Build failed")
-    cfg["last_source_commit"] = commit
-    _record(cfg, "built_commits", commit)
-    save_config(cfg)
+    record_source_build(cfg, commit)
     if status_cb:
         status_cb("Build complete.")
     return binary

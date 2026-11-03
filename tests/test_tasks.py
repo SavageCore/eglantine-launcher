@@ -1093,3 +1093,302 @@ def test_source_version_entries_no_append_when_visible_or_missing():
     assert shas == [] and latest is None
     _, shas, _, latest = source_version_entries([], set(), "zzz", True)
     assert shas == ["zzz"] and latest == "zzz"
+
+
+def test_parse_pr_url_github():
+    from eglantine_launcher.tasks import parse_pr_url
+
+    parsed = parse_pr_url("https://github.com/Djihads80/Eglantine/pull/366")
+    assert parsed == {
+        "host_kind": "github",
+        "web_host": "github.com",
+        "scheme": "https",
+        "owner": "Djihads80",
+        "repo": "Eglantine",
+        "number": 366,
+        "canonical": "https://github.com/Djihads80/Eglantine/pull/366",
+    }
+
+
+def test_parse_pr_url_forgejo_pulls_and_pull():
+    from eglantine_launcher.tasks import parse_pr_url
+
+    for url in (
+        "https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork/pulls/55",
+        "https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork/pull/55",
+        "https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork/pulls/55/files?x=1#y",
+    ):
+        parsed = parse_pr_url(url)
+        assert parsed["host_kind"] == "forgejo"
+        assert parsed["owner"] == "Franseven"
+        assert parsed["number"] == 55
+        assert parsed["canonical"].endswith("/pulls/55")
+
+
+def test_parse_pr_url_rejects_non_pr():
+    from eglantine_launcher.tasks import parse_pr_url
+
+    assert parse_pr_url("https://github.com/Djihads80/Eglantine") is None
+    assert parse_pr_url("https://github.com/Djihads80/Eglantine/issues/1") is None
+    assert parse_pr_url("not a url") is None
+    assert parse_pr_url("") is None
+    assert parse_pr_url(None) is None
+
+
+def test_pr_api_url_uses_real_hosts():
+    from eglantine_launcher.tasks import parse_pr_url, pr_api_url
+
+    assert (
+        pr_api_url(parse_pr_url("https://github.com/o/r/pull/7"))
+        == "https://api.github.com/repos/o/r/pulls/7"
+    )
+    assert (
+        pr_api_url(parse_pr_url("https://git.eden-emu.dev/o/r/pulls/9"))
+        == "https://git.eden-emu.dev/api/v1/repos/o/r/pulls/9"
+    )
+    assert (
+        pr_api_url(parse_pr_url("https://forge.example.com:3000/o/r/pull/3"))
+        == "https://forge.example.com:3000/api/v1/repos/o/r/pulls/3"
+    )
+    assert pr_api_url(None) is None
+
+
+def test_fetch_pr_info_github(monkeypatch):
+    from eglantine_launcher import tasks
+
+    payload = {
+        "title": "Fix shaders",
+        "state": "open",
+        "merged_at": None,
+        "head": {"sha": "a" * 40, "ref": "fix", "repo": {"clone_url": "https://github.com/u/r.git"}},
+        "base": {"ref": "nx2", "repo": {"clone_url": "https://github.com/Djihads80/Eglantine.git"}},
+    }
+    monkeypatch.setattr(tasks, "api_get_json", lambda url, cfg=None, timeout=None: payload)
+    info = tasks.fetch_pr_info("https://github.com/Djihads80/Eglantine/pull/366", {})
+    assert info["title"] == "Fix shaders"
+    assert info["state"] == "open"
+    assert info["merged"] is False
+    assert info["head_sha"] == "a" * 40
+    assert info["base_clone_url"] == "https://github.com/Djihads80/Eglantine.git"
+    assert info["number"] == 366
+
+
+def test_fetch_pr_info_merged_state(monkeypatch):
+    from eglantine_launcher import tasks
+
+    payload = {
+        "title": "Done",
+        "state": "closed",
+        "merged_at": "2026-01-01T00:00:00Z",
+        "head": {"sha": "b" * 40},
+        "base": {},
+    }
+    monkeypatch.setattr(tasks, "api_get_json", lambda url, cfg=None, timeout=None: payload)
+    info = tasks.fetch_pr_info("https://github.com/o/r/pull/1", {})
+    assert info["state"] == "merged"
+    assert info["merged"] is True
+    assert info["base_clone_url"] == "https://github.com/o/r.git"
+
+
+def test_fetch_pr_info_forgejo(monkeypatch):
+    from eglantine_launcher import tasks
+
+    seen = []
+    payload = {
+        "title": "Dinner update",
+        "state": "open",
+        "head": {"sha": "c" * 40, "ref": "feat"},
+        "base": {"ref": "master"},
+    }
+
+    def fake(url, cfg=None, timeout=None):
+        seen.append(url)
+        return payload
+
+    monkeypatch.setattr(tasks, "api_get_json", fake)
+    info = tasks.fetch_pr_info("https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork/pulls/55", {})
+    assert seen[0].startswith("https://git.eden-emu.dev/api/v1/repos/Franseven/")
+    assert info["head_sha"] == "c" * 40
+    assert info["base_clone_url"].endswith(".git")
+
+
+def test_fetch_pr_info_bad_url_raises():
+    import pytest
+
+    from eglantine_launcher import tasks
+
+    with pytest.raises(RuntimeError):
+        tasks.fetch_pr_info("https://github.com/o/r", {})
+
+
+def test_make_pr_project_defaults_and_edit():
+    from eglantine_launcher.tasks import make_pr_project
+
+    details = {
+        "title": "Fix shaders",
+        "state": "open",
+        "head_sha": "a" * 40,
+        "base_clone_url": "https://github.com/o/r.git",
+        "number": 366,
+        "owner": "o",
+        "repo": "r",
+    }
+    proj = make_pr_project("", "https://github.com/o/r/pull/366", details)
+    assert proj["is_pr"] is True
+    assert proj["id"].startswith("pr-r-366-")
+    assert proj["name"] == "Fix shaders (#366)"
+    assert proj["releases_url"] is None
+    assert proj["pr_head_sha"] == "a" * 40
+    edited = make_pr_project("Mine", "https://github.com/o/r/pull/366", details, existing=proj)
+    assert edited["id"] == proj["id"]
+    assert edited["name"] == "Mine"
+
+
+def test_refresh_pr_project_updates_in_place():
+    from eglantine_launcher.tasks import refresh_pr_project
+
+    proj = {"source_url": "old", "pr_state": "open", "pr_head_sha": "old", "pr_title": "old"}
+    refresh_pr_project(
+        proj, {"base_clone_url": "new", "state": "merged", "head_sha": "n" * 40, "title": "New"}
+    )
+    assert proj == {"source_url": "new", "pr_state": "merged", "pr_head_sha": "n" * 40, "pr_title": "New"}
+
+
+def test_pr_version_entries_tick_and_installed():
+    from eglantine_launcher.tasks import pr_version_entries
+
+    labels, shas, subs, latest = pr_version_entries("Fix shaders", "a" * 40, "open", {"a" * 40})
+    assert shas == ["a" * 40] and latest == "a" * 40
+    assert labels == [f"✓ {'a' * 7} Fix shaders (open)"]
+    assert subs[0].startswith(("a" * 40) + "\n")
+    labels, shas, _, latest = pr_version_entries(
+        "T", "a" * 40, "open", set(), installed_sha="b" * 40, installed_present=True
+    )
+    assert shas == ["a" * 40, "b" * 40]
+    assert labels[1] == f"✓ {'b' * 7} (installed build)"
+    assert latest == "a" * 40
+    assert pr_version_entries("T", "", "open") == ([], [], [], None)
+
+
+def test_is_pr_and_per_project_build_record(fake_home):
+    from eglantine_launcher import tasks
+    from eglantine_launcher.config import load
+
+    assert tasks.is_pr_project({"is_pr": True}) is True
+    assert tasks.is_pr_project({"id": "x"}) is False
+    cfg = load()
+    cfg["project"] = "eglantine"
+    tasks.record_source_build(cfg, "a" * 40)
+    assert cfg["last_source_commit"] == "a" * 40
+    assert next(p for p in cfg["projects"] if p["id"] == "eglantine")["last_built_commit"] == "a" * 40
+    assert tasks.get_project_last_built(cfg) == "a" * 40
+    # per-project value wins over a stale global from another project
+    cfg["last_source_commit"] = "stale"
+    assert tasks.get_project_last_built(cfg) == "a" * 40
+
+
+def test_ensure_source_pr_fresh_clone(monkeypatch, tmp_path, fake_home):
+    from eglantine_launcher import tasks
+
+    src_base = tmp_path / "src"
+    src_base.mkdir()
+    cfg = {
+        "project": "pr-x",
+        "source_dir": str(src_base),
+        "projects": [
+            {
+                "id": "pr-x",
+                "is_pr": True,
+                "pr_number": 366,
+                "source_url": "https://github.com/o/r.git",
+                "pr_head_sha": "a" * 40,
+            }
+        ],
+    }
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:2] == ["git", "clone"]:
+            Path(cmd[-1]).mkdir(parents=True)
+            (Path(cmd[-1]) / ".git").mkdir()
+            return None
+        if cmd[-2:] == ["rev-parse", "HEAD"]:
+            raise AssertionError("rev-parse must go through check_output")
+        return None
+
+    def fake_out(cmd, **kw):
+        if "--verify" in cmd:
+            raise Exception("no local branch yet")
+        return "a" * 40 + "\n"
+
+    monkeypatch.setattr(tasks, "_host_run", fake_run)
+    monkeypatch.setattr(tasks, "_host_check_output", fake_out)
+    src, commit = tasks.ensure_source(cfg)
+    assert commit == "a" * 40
+    assert any("clone" in c for c in calls)
+    assert any("pull/366/head" in " ".join(c) for c in calls)
+    assert any("checkout" in c for c in calls)
+
+
+def test_ensure_source_pr_fetch_falls_back_to_pulls(monkeypatch, tmp_path, fake_home):
+    from eglantine_launcher import tasks
+
+    src = tmp_path / "src" / "pr-x"
+    (src / ".git").mkdir(parents=True)
+    cfg = {
+        "project": "pr-x",
+        "source_dir": str(tmp_path / "src"),
+        "projects": [{"id": "pr-x", "is_pr": True, "pr_number": 55, "source_url": "https://x/y.git"}],
+    }
+    fetched = []
+
+    def fake_run(cmd, **kw):
+        if "fetch" in cmd:
+            fetched.append(cmd[-1])
+            if "pull/55" in cmd[-1]:
+                raise Exception("no such ref")
+            return None
+        if "remote" in cmd:
+            return None
+        return None
+
+    monkeypatch.setattr(tasks, "_host_run", fake_run)
+    monkeypatch.setattr(tasks, "_host_check_output", lambda *a, **k: "c" * 40 + "\n")
+    _, commit = tasks.ensure_source(cfg, commit="c" * 40)
+    assert commit == "c" * 40
+    assert fetched == ["+pull/55/head:pr-55", "+pulls/55/head:pr-55"]
+
+
+def test_remove_pr_project_full_cleanup(tmp_path, fake_home, monkeypatch):
+    from eglantine_launcher import tasks
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    install = tmp_path / "install"
+    src = tmp_path / "src"
+    (install / "pr-r-55-abcdef").mkdir(parents=True)
+    (src / "pr-r-55-abcdef" / ".git").mkdir(parents=True)
+    cfg = {
+        "project": "pr-r-55-abcdef",
+        "install_dir": str(install),
+        "source_dir": str(src),
+        "built_commits": ["a" * 40, "b" * 40],
+        "last_source_commit": "a" * 40,
+        "projects": [
+            {
+                "id": "pr-r-55-abcdef",
+                "is_pr": True,
+                "last_built_commit": "a" * 40,
+                "pr_head_sha": "a" * 40,
+            },
+            {"id": "eglantine", "name": "Eglantine"},
+        ],
+    }
+    monkeypatch.setattr(tasks, "_host_check_output", lambda *a, **k: "a" * 40 + "\n")
+    assert tasks.remove_pr_project(cfg, "pr-r-55-abcdef") is True
+    assert [p["id"] for p in cfg["projects"]] == ["eglantine"]
+    assert cfg["project"] == "eglantine"
+    assert cfg["built_commits"] == ["b" * 40]
+    assert cfg["last_source_commit"] is None
+    assert not (src / "pr-r-55-abcdef").exists()
+    assert tasks.remove_pr_project(cfg, "missing") is False

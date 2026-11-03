@@ -154,6 +154,8 @@ def merge_remote_sources(cfg, remote):
             continue
         if pid in by_id:
             p = by_id[pid]
+            if p.get("is_pr"):
+                continue
             for field in REMOTE_FIELDS:
                 if entry.get(field) and p.get(field) != entry[field]:
                     p[field] = entry[field]

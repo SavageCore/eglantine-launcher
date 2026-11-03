@@ -647,6 +647,9 @@ class SettingsWindow(Adw.Window):
                 pass
         self._source_rows = []
         for p in self.cfg.get("projects", []):
+            if p.get("is_pr"):
+                # one-off PR builds are managed in the PR Builds dialog
+                continue
             row = Adw.ActionRow(title=p.get("name", p.get("id", "")), subtitle=p.get("source_url", ""))
             row.set_activatable(True)
             row.connect("activated", self._on_row_activated)
