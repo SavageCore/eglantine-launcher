@@ -9,13 +9,15 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="$ROOT/docs/screenshots"
 DISP=:99
 
-pages=(main settings about)
+pages=(main settings about pr_builds)
 flags_main=""
 flags_settings="--settings"
 flags_about="--about"
+flags_pr_builds="--pr-builds"
 titles_main="Eglantine Launcher"
 titles_settings="Settings"
 titles_about="Eglantine Launcher"
+titles_pr_builds="PR Builds"
 
 export GDK_BACKEND=x11
 export PYTHONPATH="$ROOT:${PYTHONPATH:-}"
@@ -58,9 +60,63 @@ if ! kill -0 $BACKDROP_PID 2>/dev/null; then
   exit 1
 fi
 
+# The PR Builds dialog is empty with shipped defaults, which makes a bare
+# screenshot. Seed two example entries (one open, one merged to show the
+# badge) so the shot shows the list UI. Seeded after the other pages so
+# main/settings/about still show plain defaults (settings hides PRs
+# anyway, and main keeps Eglantine selected).
+seed_pr_dummies() {
+  DISPLAY=$DISP PYTHONPATH="$ROOT" python3 - <<'EOF'
+from eglantine_launcher.config import load, save
+
+cfg = load()
+ids = {p.get("id") for p in cfg.get("projects", [])}
+dummies = [
+    {
+        "id": "pr-eglantine-364-shot",
+        "name": "Async shader compile (#364)",
+        "source_url": "https://github.com/Djihads80/Eglantine.git",
+        "branch": "pr-364",
+        "releases_url": None,
+        "is_pr": True,
+        "pr_url": "https://github.com/Djihads80/Eglantine/pull/364",
+        "pr_number": 364,
+        "pr_owner": "Djihads80",
+        "pr_repo": "Eglantine",
+        "pr_title": "Async shader compile",
+        "pr_state": "open",
+        "pr_head_sha": "deadbeef" * 5,
+    },
+    {
+        "id": "pr-pokedinner-58-shot",
+        "name": "Pokopia HUD scale (#58)",
+        "source_url": "https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork.git",
+        "branch": "pr-58",
+        "releases_url": None,
+        "is_pr": True,
+        "pr_url": "https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork/pulls/58",
+        "pr_number": 58,
+        "pr_owner": "Franseven",
+        "pr_repo": "PokeDinner-a-Eglantine-Fork",
+        "pr_title": "Pokopia HUD scale",
+        "pr_state": "merged",
+        "pr_head_sha": "cafef00d" * 5,
+    },
+]
+for dummy in dummies:
+    if dummy["id"] not in ids:
+        cfg.setdefault("projects", []).append(dummy)
+save(cfg)
+print("seeded example PR entries")
+EOF
+}
+
 shot() {
   local mode="$1" page="$2" extra="$3" title="$4" dest="$5"
   echo "capturing $mode/$page..."
+  if [ "$page" = "pr_builds" ]; then
+    seed_pr_dummies
+  fi
   # the app quits itself after 8s: no kill races, no teardown segfaults,
   # no stale window ids for the next shot
   DISPLAY=$DISP python3 -m eglantine_launcher --color-scheme "$mode" --quit-after 8 $extra &
