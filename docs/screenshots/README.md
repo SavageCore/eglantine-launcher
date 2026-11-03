@@ -11,6 +11,7 @@
 | Source storage | ![Source storage light](light/source_edit_storage.png) | ![Source storage dark](dark/source_edit_storage.png) |
 | Source tags | ![Source tags light](light/source_edit_tags.png) | ![Source tags dark](dark/source_edit_tags.png) |
 | About | ![About light](light/about.png) | ![About dark](dark/about.png) |
+| PR Builds | ![PR Builds light](light/pr_builds.png) | ![PR Builds dark](dark/pr_builds.png) |
 
 Retake with `make screenshot` (needs Xvfb, xdotool, ImageMagick).
 Captures run with an isolated home directory, so only the shipped
