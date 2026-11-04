@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 from pathlib import Path
 
 from .gpu import gpu_vendors
@@ -27,6 +28,34 @@ def config_file():
 # Set on every dict returned by load(): the file it came from. save() writes
 # back there even if the environment changed in between, and never stores it.
 _CONFIG_PATH_KEY = "_config_path"
+
+# install_dir/source_dir must never point into a temp tree that is not ours:
+# pytest redirects HOME there, and a worker thread that outlives its test
+# once rewrote the real file with another test's tmp paths (taking saves,
+# backups and builds with it). Paths under the current home are fine, even
+# on tmpfs; anything else in temp is pytest garbage. Nobody keeps a 100+ GB
+# build tree in somebody else's tmpdir on purpose.
+_PATH_KEYS = ("install_dir", "source_dir")
+
+
+def _stray_tmp_path(path):
+    try:
+        p = Path(path).expanduser()
+        if not p.is_absolute():
+            p = _base_home() / p
+        if not p.is_relative_to(Path(tempfile.gettempdir())):
+            return False
+        return not p.is_relative_to(_base_home())
+    except Exception:
+        return False
+
+
+def _scrub_paths(cfg, fallback):
+    """Drop stray tmp-tree install/source dirs, keeping the fallback's values."""
+    for key in _PATH_KEYS:
+        if cfg.get(key) and _stray_tmp_path(cfg[key]):
+            cfg[key] = fallback.get(key, cfg.get(key))
+    return cfg
 
 
 def _default_exclude_keywords():
@@ -117,6 +146,8 @@ def load():
         # HOME/XDG) writes back where it read from, never to the real file.
         cfg.pop(_CONFIG_PATH_KEY, None)
         cfg[_CONFIG_PATH_KEY] = str(path)
+        # Heal a file a stale process clobbered with tmp paths (see save()).
+        _scrub_paths(cfg, default_config())
         if not cfg.get("projects"):
             cfg["projects"] = [p.copy() for p in DEFAULT_PROJECTS]
         else:
@@ -197,6 +228,10 @@ def save(cfg):
     except Exception:
         on_disk = {}
     merged = {**default_config(), **on_disk, **cfg}
+    # A stale in-memory dict (long-running process, pre-fix file) must not
+    # push tmp-tree paths back into the file: prefer what is on disk, else
+    # defaults. The same scrub runs on load, so both directions are covered.
+    _scrub_paths(merged, {**default_config(), **on_disk})
     merged.pop(_CONFIG_PATH_KEY, None)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(merged, indent=2))

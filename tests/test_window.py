@@ -1031,13 +1031,13 @@ def test_already_built_uses_per_project_value(needs_display, fake_home, tmp_path
         pr = _pr_cfg()
         window.cfg["projects"].append(pr)
         window.cfg["project"] = pr["id"]
-        window.cfg["source_dir"] = str(tmp_path / "src")
+        window.cfg["source_dir"] = str(fake_home / "src")
         window.cfg["last_source_commit"] = "stale"
         for p in window.cfg["projects"]:
             if p["id"] == pr["id"]:
                 p["last_built_commit"] = "a" * 40
         save(window.cfg)
-        binary = tmp_path / "src" / pr["id"] / "build" / "release" / "bin"
+        binary = fake_home / "src" / pr["id"] / "build" / "release" / "bin"
         binary.mkdir(parents=True)
         (binary / "eglantine").write_bytes(b"x")
         assert window._already_built("a" * 40) is True
@@ -1148,10 +1148,10 @@ def test_pr_delete_removes_entry_and_data(needs_display, fake_home, tmp_path, mo
     pr = _pr_cfg()
     cfg["projects"].append(pr)
     cfg["project"] = pr["id"]
-    cfg["source_dir"] = str(tmp_path / "src")
-    cfg["install_dir"] = str(tmp_path / "install")
+    cfg["source_dir"] = str(fake_home / "src")
+    cfg["install_dir"] = str(fake_home / "install")
     save(cfg)
-    src = tmp_path / "src" / pr["id"]
+    src = fake_home / "src" / pr["id"]
     (src / ".git").mkdir(parents=True)
 
     def _offline(*a, **k):

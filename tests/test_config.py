@@ -53,3 +53,41 @@ def test_cleared_rejected_flag_sticks(fake_home):
 
     assert _read()["github_token_rejected"] is False
     assert _read()["github_token"] == "ghp_example"
+
+
+def test_tmp_tree_paths_never_persist(fake_home, tmp_path):
+    cfg = config.load()
+    cfg["install_dir"] = "/tmp/pytest-of-savagecore/pytest-1/home/.local/share/eglantine-launcher"
+    cfg["source_dir"] = "/tmp/pytest-of-savagecore/pytest-1/home/.local/share/eglantine-launcher/src"
+    config.save(cfg)
+
+    stored = _read()
+    assert stored["install_dir"] == config.default_config()["install_dir"]
+    assert stored["source_dir"] == config.default_config()["source_dir"]
+
+
+def test_tmp_tree_paths_prefer_on_disk_values(fake_home, tmp_path):
+    cfg = config.load()
+    cfg["install_dir"] = str(fake_home / "real-install")
+    config.save(cfg)
+
+    stale = config.load()
+    stale["install_dir"] = "/tmp/pytest-of-savagecore/pytest-1/home/.local/share/eglantine-launcher"
+    config.save(stale)
+
+    assert _read()["install_dir"] == str(fake_home / "real-install")
+
+
+def test_load_heals_clobbered_file(fake_home):
+    healed = config.load()
+    assert healed["install_dir"] == config.default_config()["install_dir"]
+
+    path = config.config_file()
+    raw = json.loads(path.read_text())
+    raw["install_dir"] = "/tmp/pytest-of-savagecore/pytest-1/home/x"
+    raw["source_dir"] = "/tmp/pytest-of-savagecore/pytest-1/home/y"
+    path.write_text(json.dumps(raw))
+
+    healed = config.load()
+    assert healed["install_dir"] == config.default_config()["install_dir"]
+    assert healed["source_dir"] == config.default_config()["source_dir"]
