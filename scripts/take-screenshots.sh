@@ -9,13 +9,15 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="$ROOT/docs/screenshots"
 DISP=:99
 
-pages=(main settings about pr_builds)
+pages=(main settings source_edit about pr_builds)
 flags_main=""
 flags_settings="--settings"
+flags_source_edit="--edit-source"
 flags_about="--about"
 flags_pr_builds="--pr-builds"
 titles_main="Eglantine Launcher"
 titles_settings="Settings"
+titles_source_edit="Edit source"
 titles_about="Eglantine Launcher"
 titles_pr_builds="PR Builds"
 

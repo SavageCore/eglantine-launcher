@@ -801,28 +801,7 @@ class SettingsWindow(Adw.Window):
 
     def _edit_project(self, proj):
         def open_editor(branches, default_branch=None):
-            def save(project, old_id):
-                projects = self.cfg.get("projects", [])
-                for i, p in enumerate(projects):
-                    if p.get("id") == old_id:
-                        projects[i] = project
-                        break
-                save_config(self.cfg)
-                self._refresh()
-                if self.on_changed:
-                    self.on_changed()
-
-            prefill = {"branches": branches} if branches else {}
-            if default_branch:
-                prefill["default_branch"] = default_branch
-            ProjectEditDialog(
-                self,
-                proj,
-                save,
-                prefill=prefill,
-                cfg=self.cfg,
-                on_storage_changed=self.on_changed,
-            ).present()
+            self._open_source_editor(proj, branches, default_branch)
 
         def fetch():
             try:
@@ -838,6 +817,36 @@ class SettingsWindow(Adw.Window):
             GLib.idle_add(open_editor, branches, default_branch)
 
         threading.Thread(target=fetch, daemon=True).start()
+
+    def _save_project(self, project, old_id):
+        projects = self.cfg.get("projects", [])
+        for i, p in enumerate(projects):
+            if p.get("id") == old_id:
+                projects[i] = project
+                break
+        save_config(self.cfg)
+        self._refresh()
+        if self.on_changed:
+            self.on_changed()
+
+    def _open_source_editor(self, proj, branches=None, default_branch=None):
+        prefill = {"branches": branches} if branches else {}
+        if default_branch:
+            prefill["default_branch"] = default_branch
+        ProjectEditDialog(
+            self,
+            proj,
+            self._save_project,
+            prefill=prefill,
+            cfg=self.cfg,
+            on_storage_changed=self.on_changed,
+        ).present()
+
+    def open_source_editor(self, pid):
+        """Open a source's editor without fetching branches (screenshot hook)."""
+        proj = next((p for p in self.cfg.get("projects", []) if p.get("id") == pid), None)
+        if proj is not None:
+            self._open_source_editor(proj)
 
     def _on_delete_clicked(self, _btn, proj):
         name = proj.get("name", proj.get("id", "this source"))

@@ -1403,7 +1403,9 @@ class LauncherWindow(Adw.ApplicationWindow):
         save_config(self.cfg)
 
     def on_settings(self, *_args):
-        SettingsWindow(self, on_changed=self.reload_projects).present()
+        win = SettingsWindow(self, on_changed=self.reload_projects)
+        win.present()
+        return win
 
     def on_pr_builds(self, *_args):
         PRBuildsDialog(self, on_changed=self.reload_projects, on_launch=self._launch_pr).present()

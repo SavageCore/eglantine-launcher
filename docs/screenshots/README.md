@@ -4,6 +4,7 @@
 |---|---|---|
 | Main | ![Main light](light/main.png) | ![Main dark](dark/main.png) |
 | Settings | ![Settings light](light/settings.png) | ![Settings dark](dark/settings.png) |
+| Source settings | ![Source settings light](light/source_edit.png) | ![Source settings dark](dark/source_edit.png) |
 | About | ![About light](light/about.png) | ![About dark](dark/about.png) |
 | PR Builds | ![PR Builds light](light/pr_builds.png) | ![PR Builds dark](dark/pr_builds.png) |
 

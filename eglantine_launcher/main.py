@@ -65,6 +65,9 @@ def main() -> int:
         help="Force libadwaita color scheme (default follows the system)",
     )
     parser.add_argument("--settings", action="store_true", help="Open the Settings window on launch")
+    parser.add_argument(
+        "--edit-source", action="store_true", help="Open a source's editor on launch (screenshots)"
+    )
     parser.add_argument("--about", action="store_true", help="Open the About dialog on launch")
     parser.add_argument("--pr-builds", action="store_true", help="Open the PR Builds dialog on launch")
     args = parser.parse_args()
@@ -142,8 +145,12 @@ def main() -> int:
             if self._window is None:
                 self._window = LauncherWindow(app, auto=self._auto)
             self._window.restore_from_tray()
-            if args.settings:
-                self._window.on_settings()
+            if args.settings or args.edit_source:
+                settings = self._window.on_settings()
+                if args.edit_source and settings is not None:
+                    sources = [p for p in settings.cfg.get("projects", []) if not p.get("is_pr")]
+                    if sources:
+                        settings.open_source_editor(sources[0].get("id"))
             if args.about:
                 self._window.on_about()
             if args.pr_builds:
