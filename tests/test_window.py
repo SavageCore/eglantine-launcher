@@ -909,7 +909,8 @@ def test_token_status_timeout_keeps_newer_message(needs_display, fake_home):
 
 def _pr_cfg():
     return {
-        "id": "pr-r-366-abcdef",
+        # Synthetic id: must never match a real entry (see pr-r-366-abcdef).
+        "id": "pr-fixture-o-r-123456",
         "name": "Fix shaders (#366)",
         "source_url": "https://github.com/o/r.git",
         "branch": "pr-366",
