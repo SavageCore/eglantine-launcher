@@ -70,6 +70,14 @@ Storage tab resets it to emulator defaults.
 On Windows the emulator keeps its settings and data in a `user` folder next to
 the executable, which is already per source.
 
+## Save backups
+
+Every launch keeps a timestamped copy of your emulator saves
+(`~/.local/share/eglantine-launcher/save-backups/`, newest 10 kept), before
+the emulator starts - even a crashed run leaves a restorable copy. The
+Settings window lists them with one-click Restore and Delete. Restoring
+overwrites current saves; files a backup does not contain are left alone.
+
 ## GitHub API token (optional)
 
 GitHub allows ~60 API requests/hour per IP without a token, which release

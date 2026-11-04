@@ -1401,6 +1401,105 @@ def source_config_dir(info):
     return source_config_home(info) / EMULATOR_CONFIG_DIR
 
 
+# Timestamped copies of the save tree kept here; newest SAVE_BACKUP_KEEP win.
+SAVE_BACKUP_KEEP = 10
+
+
+def _data_home():
+    override = os.environ.get("XDG_DATA_HOME")
+    if override:
+        return Path(override)
+    return Path(os.environ.get("HOME") or str(Path.home())) / ".local" / "share"
+
+
+def _project_binary(cfg):
+    """Best guess at the current project's emulator binary (for save location)."""
+    if (cfg or {}).get("mode") == "source":
+        name = "eglantine.exe" if is_windows() else "eglantine"
+        return source_dir(cfg) / "build" / "release" / "bin" / name
+    return release_appimage_path(cfg)
+
+
+def emulator_save_dir(cfg=None, binary_path=None):
+    """Live user game saves for the emulator about to launch.
+
+    Linux keeps them in ``$XDG_DATA_HOME/eden/nand/user/save`` no matter
+    which source runs. On Windows they live in the portable ``user`` tree
+    next to the executable, which is already per source.
+    """
+    if is_windows():
+        exe = Path(binary_path) if binary_path else _project_binary(cfg or {})
+        return exe.parent / "user" / "nand" / "user" / "save"
+    return _data_home() / EMULATOR_CONFIG_DIR / "nand" / "user" / "save"
+
+
+def save_backup_root(cfg):
+    return Path(cfg["install_dir"]) / "save-backups"
+
+
+def backup_saves(cfg, binary_path=None):
+    """Copy the live save tree aside; keep the newest SAVE_BACKUP_KEEP.
+
+    Runs before every launch. Never raises: a backup must not block a game.
+    Returns the backup path, or None when there was nothing to back up.
+    """
+    try:
+        src = emulator_save_dir(cfg, binary_path)
+        if not src.is_dir():
+            return None
+        root = save_backup_root(cfg)
+        root.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
+        dest = root / stamp
+        if dest.exists():  # relaunched within the same second
+            for i in range(2, 100):
+                if not (root / f"{stamp}-{i}").exists():
+                    dest = root / f"{stamp}-{i}"
+                    break
+        shutil.copytree(src, dest)
+        for old in sorted(p.name for p in root.iterdir() if p.is_dir())[:-SAVE_BACKUP_KEEP]:
+            shutil.rmtree(root / old, ignore_errors=True)
+        return dest
+    except OSError:
+        return None
+
+
+def list_save_backups(cfg):
+    """Newest-first [{name, path, size}]; empty when there are none."""
+    root = save_backup_root(cfg)
+    try:
+        names = sorted((p.name for p in root.iterdir() if p.is_dir()), reverse=True)
+    except OSError:
+        return []
+    return [{"name": n, "path": str(root / n), "size": dir_size(root / n)} for n in names]
+
+
+def delete_save_backup(cfg, name):
+    target = save_backup_root(cfg) / (name or "")
+    if not name or target.parent != save_backup_root(cfg):
+        return "Refusing: path is outside the save backups."
+    shutil.rmtree(target, ignore_errors=True)
+    return None
+
+
+def restore_save_backup(cfg, name, binary_path=None):
+    """Copy a backup over the live saves. Files only in live stay put.
+
+    The pre-launch backups already record recent states, so restoring an
+    older one is always undoable by restoring a newer one.
+    """
+    src = save_backup_root(cfg) / (name or "")
+    if not name or src.parent != save_backup_root(cfg) or not src.is_dir():
+        return "Unknown backup."
+    try:
+        dst = emulator_save_dir(cfg, binary_path)
+        dst.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src, dst, dirs_exist_ok=True)
+    except OSError as e:
+        return f"Could not restore: {e}"
+    return None
+
+
 def move_source_config(cfg, info, new_key):
     """Rename a source's config folder when its key changes.
 
@@ -2360,6 +2459,10 @@ def launch(path, cfg=None):
     path = Path(path)
     info = project_info(cfg) if isinstance(cfg, dict) else {}
     try:
+        # Snapshot saves first: even a crashed run leaves a restorable copy.
+        # backup_saves never raises, so a broken backup dir can't block play.
+        if isinstance(cfg, dict):
+            backup_saves(cfg, path)
         home = seed_source_config(cfg, info) if isinstance(cfg, dict) else source_config_home(info)
     except OSError:
         # A config folder that cannot be written must not block the launch.

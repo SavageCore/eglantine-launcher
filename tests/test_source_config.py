@@ -221,6 +221,92 @@ def test_move_source_config_never_overwrites(fake_home):
     assert old.is_dir()
 
 
+def _save_cfg(fake_home, tmp_path):
+    install = tmp_path / "install"
+    cfg = {"install_dir": str(install), "projects": []}
+    saves = fake_home / ".local" / "share" / "eden" / "nand" / "user" / "save"
+    (saves / "0000000000000000" / "user1" / "0100000000000000").mkdir(parents=True)
+    (saves / "0000000000000000" / "user1" / "0100000000000000" / "file0").write_text("progress")
+    return cfg
+
+
+def test_backup_saves_creates_timestamped_copy(fake_home, tmp_path):
+    cfg = _save_cfg(fake_home, tmp_path)
+
+    dest = tasks.backup_saves(cfg)
+
+    assert dest is not None
+    assert (dest / "0000000000000000" / "user1" / "0100000000000000" / "file0").read_text() == "progress"
+
+
+def test_backup_saves_missing_tree_returns_none(fake_home, tmp_path):
+    cfg = {"install_dir": str(tmp_path / "install"), "projects": []}
+    assert tasks.backup_saves(cfg) is None
+
+
+def test_backup_saves_prunes_to_keep(fake_home, tmp_path, monkeypatch):
+    monkeypatch.setattr(tasks, "SAVE_BACKUP_KEEP", 3)
+    cfg = _save_cfg(fake_home, tmp_path)
+    for _ in range(5):
+        assert tasks.backup_saves(cfg) is not None
+
+    assert len(tasks.list_save_backups(cfg)) == 3
+
+
+def test_backup_failure_never_blocks_launch(fake_home, tmp_path, monkeypatch):
+    import subprocess
+
+    seen = {}
+
+    def fake(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return object()
+
+    monkeypatch.setattr(subprocess, "Popen", fake)
+    monkeypatch.setattr(tasks.shutil, "copytree", lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
+    binary = tmp_path / "eglantine"
+    binary.write_text("")
+    cfg = _save_cfg(fake_home, tmp_path)
+
+    assert tasks.launch(binary, cfg) is not None
+    assert seen["cmd"] == [str(binary)]
+
+
+def test_launch_backs_up_before_starting(fake_home, tmp_path, monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: object())
+    binary = tmp_path / "eglantine"
+    binary.write_text("")
+    cfg = _save_cfg(fake_home, tmp_path)
+
+    tasks.launch(binary, cfg)
+
+    assert len(tasks.list_save_backups(cfg)) == 1
+
+
+def test_restore_and_delete_save_backup(fake_home, tmp_path):
+    cfg = _save_cfg(fake_home, tmp_path)
+    dest = tasks.backup_saves(cfg)
+    name = dest.name
+
+    live = tasks.emulator_save_dir(cfg)
+    (live / "0000000000000000" / "user1" / "0100000000000000" / "file0").write_text("newer")
+    assert tasks.restore_save_backup(cfg, name) is None
+    assert (live / "0000000000000000" / "user1" / "0100000000000000" / "file0").read_text() == "progress"
+
+    assert tasks.delete_save_backup(cfg, name) is None
+    assert tasks.list_save_backups(cfg) == []
+    assert tasks.restore_save_backup(cfg, name) is not None
+
+
+def test_save_backup_guards_reject_foreign_paths(fake_home, tmp_path):
+    cfg = _save_cfg(fake_home, tmp_path)
+    assert tasks.delete_save_backup(cfg, "../elsewhere") is not None
+    assert tasks.delete_save_backup(cfg, "") is not None
+    assert tasks.restore_save_backup(cfg, "") is not None
+
+
 def test_make_pr_project_keeps_config_fields():
     existing = {
         "id": "pr-o-r-1-abc",

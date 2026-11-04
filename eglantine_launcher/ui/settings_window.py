@@ -11,6 +11,8 @@ from gi.repository import Adw, GLib, Gtk
 from ..config import load as load_config
 from ..config import save as save_config
 from ..tasks import (
+    SAVE_BACKUP_KEEP,
+    delete_save_backup,
     delete_storage_row,
     fetch_github_branch_dates,
     fetch_repo_name,
@@ -18,10 +20,12 @@ from ..tasks import (
     get_default_branch,
     infer_releases_url,
     list_branches,
+    list_save_backups,
     move_source_config,
     parse_repo,
     project_storage,
     remove_project_data,
+    restore_save_backup,
     should_fetch_branch_dates,
     sort_branch_names,
     source_key,
@@ -491,6 +495,21 @@ class SettingsWindow(Adw.Window):
         window_group.add(self.close_behavior_row)
         content_box.append(window_group)
 
+        backup_group = Adw.PreferencesGroup(
+            title="Save backups",
+            description="A copy of your emulator saves is kept every time you launch "
+            f"(newest {SAVE_BACKUP_KEEP} kept). Restoring overwrites current saves.",
+        )
+        self.backup_group = backup_group
+        content_box.append(backup_group)
+        self.backup_status = Gtk.Label(label="Loading…")
+        self.backup_status.add_css_class("dim-label")
+        self.backup_status.set_wrap(True)
+        self.backup_status.set_xalign(0)
+        content_box.append(self.backup_status)
+        self._backup_rows = []
+        self._refresh_backups()
+
         src_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         src_header.set_valign(Gtk.Align.CENTER)
         lbl = Gtk.Label(label="Emulator sources")
@@ -729,6 +748,107 @@ class SettingsWindow(Adw.Window):
             self.cfg["github_token"] = token
             save_config(self.cfg)
             self._set_token_status(f"Could not verify ({reason}); saved anyway.", "warning")
+
+    def _refresh_backups(self):
+        self.backup_status.set_label("Loading…")
+
+        def worker():
+            try:
+                rows = list_save_backups(self.cfg)
+            except Exception as e:  # never break the dialog on a stat failure
+                rows, err = [], str(e)
+            else:
+                err = ""
+            GLib.idle_add(self._render_backups, rows, err)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _render_backups(self, rows, err=""):
+        if getattr(self, "backup_group", None) is None:
+            return False
+        for widget in getattr(self, "_backup_rows", []):
+            try:
+                self.backup_group.remove(widget)
+            except Exception:
+                pass
+        self._backup_rows = []
+        if err:
+            self.backup_status.set_label(f"Could not read backups: {err}")
+        elif not rows:
+            self.backup_status.set_label("No backups yet - one is kept every time you launch a game.")
+        else:
+            total = sum(r.get("size") or 0 for r in rows)
+            self.backup_status.set_label(
+                f"{len(rows)} backup(s), {format_size(total)} total. Deleted backups cannot be recovered."
+            )
+            for row in rows:
+                widget = self._backup_row(row)
+                self._backup_rows.append(widget)
+                self.backup_group.add(widget)
+        return False
+
+    def _backup_row(self, row):
+        size = format_size(row.get("size")) if row.get("size") is not None else "unknown size"
+        action = Adw.ActionRow(title=row.get("name", ""), subtitle=size)
+        restore = Gtk.Button(label="Restore")
+        restore.set_valign(Gtk.Align.CENTER)
+        restore.set_tooltip_text("Overwrite current saves with this backup")
+        restore.connect("clicked", self._on_backup_restore_clicked, row)
+        action.add_suffix(restore)
+        delete = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+        delete.add_css_class("flat")
+        delete.set_valign(Gtk.Align.CENTER)
+        delete.set_tooltip_text(f"Delete backup {row.get('name', '')}")
+        delete.connect("clicked", self._on_backup_delete_clicked, row)
+        action.add_suffix(delete)
+        return action
+
+    def _on_backup_restore_clicked(self, _btn, row):
+        dlg = Adw.MessageDialog(
+            transient_for=self,
+            modal=True,
+            heading=f"Restore saves from {row.get('name', 'backup')}?",
+            body="Overwrites your current saves with this backup. "
+            "Your current state was itself backed up at the last launch.",
+        )
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("restore", "Restore")
+        dlg.set_response_appearance("restore", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_default_response("cancel")
+        dlg.set_close_response("cancel")
+
+        def on_response(_dlg, response):
+            if response == "restore":
+                self._do_backup_restore(row)
+            _dlg.close()
+
+        dlg.connect("response", on_response)
+        dlg.present()
+
+    def _do_backup_restore(self, row):
+        self.backup_status.set_label(f"Restoring {row.get('name', '')}…")
+
+        def worker():
+            err = restore_save_backup(self.cfg, row.get("name"))
+            GLib.idle_add(self._after_backup_restore, err)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _after_backup_restore(self, err):
+        if err:
+            self.backup_status.set_label(err)
+        else:
+            self._refresh_backups()
+        return False
+
+    def _on_backup_delete_clicked(self, _btn, row):
+        self.backup_status.set_label(f"Deleting {row.get('name', '')}…")
+
+        def worker():
+            delete_save_backup(self.cfg, row.get("name"))
+            GLib.idle_add(self._refresh_backups)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _refresh(self):
         for row in getattr(self, "_source_rows", []):
