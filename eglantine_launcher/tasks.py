@@ -1405,6 +1405,25 @@ def source_config_dir(info):
 SAVE_BACKUP_KEEP = 10
 
 
+def format_backup_name(name):
+    """UTC backup folder name in the user's local timezone and locale.
+
+    Unknown formats pass through unchanged so a weird folder never breaks
+    the list.
+    """
+    import re
+
+    m = re.match(r"^(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z)(-\d+)?$", name or "")
+    if not m:
+        return name
+    try:
+        stamp = datetime.strptime(m.group(1), "%Y-%m-%dT%H-%M-%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        return name
+    text = stamp.astimezone().strftime("%c")
+    return text + m.group(2) if m.group(2) else text
+
+
 def _data_home():
     override = os.environ.get("XDG_DATA_HOME")
     if override:

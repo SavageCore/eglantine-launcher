@@ -16,6 +16,7 @@ from ..tasks import (
     delete_storage_row,
     fetch_github_branch_dates,
     fetch_repo_name,
+    format_backup_name,
     format_size,
     get_default_branch,
     infer_releases_url,
@@ -778,8 +779,10 @@ class SettingsWindow(Adw.Window):
             self.backup_status.set_label("No backups yet - one is kept every time you launch a game.")
         else:
             total = sum(r.get("size") or 0 for r in rows)
+            n = len(rows)
             self.backup_status.set_label(
-                f"{len(rows)} backup(s), {format_size(total)} total. Deleted backups cannot be recovered."
+                f"{n} backup{'s' if n != 1 else ''}, {format_size(total)} total. "
+                "Deleted backups cannot be recovered."
             )
             for row in rows:
                 widget = self._backup_row(row)
@@ -789,7 +792,7 @@ class SettingsWindow(Adw.Window):
 
     def _backup_row(self, row):
         size = format_size(row.get("size")) if row.get("size") is not None else "unknown size"
-        action = Adw.ActionRow(title=row.get("name", ""), subtitle=size)
+        action = Adw.ActionRow(title=format_backup_name(row.get("name", "")), subtitle=size)
         restore = Gtk.Button(label="Restore")
         restore.set_valign(Gtk.Align.CENTER)
         restore.set_tooltip_text("Overwrite current saves with this backup")

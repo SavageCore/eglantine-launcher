@@ -307,6 +307,15 @@ def test_save_backup_guards_reject_foreign_paths(fake_home, tmp_path):
     assert tasks.restore_save_backup(cfg, "") is not None
 
 
+def test_format_backup_name_localizes_utc():
+    text = tasks.format_backup_name("2026-11-04T19-26-07Z")
+    assert "2026" in text
+    assert not text.endswith("Z")
+    assert tasks.format_backup_name("2026-11-04T19-26-07Z-2").endswith("-2")
+    assert tasks.format_backup_name("not-a-backup") == "not-a-backup"
+    assert tasks.format_backup_name("") == ""
+
+
 def test_make_pr_project_keeps_config_fields():
     existing = {
         "id": "pr-o-r-1-abc",
