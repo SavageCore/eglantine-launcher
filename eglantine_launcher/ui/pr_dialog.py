@@ -16,6 +16,7 @@ from ..tasks import (
     pr_default_name,
     refresh_pr_project,
     remove_pr_project,
+    source_key,
 )
 
 
@@ -26,11 +27,13 @@ class PREditDialog(Adw.Window):
         super().__init__(
             transient_for=parent, modal=True, title="Edit PR build" if project else "New PR build"
         )
-        self.set_default_size(480, 320)
+        self.set_default_size(480, 420)
         self.on_save = on_save
         self.project = dict(project) if project else {}
         self._cfg = cfg or {}
         self._name_touched = bool(self.project.get("name"))
+        self._config_key_touched = bool(self.project.get("config_key"))
+        self._updating_config = False
         self._lookup_seq = 0
         self._fetching = False
 
@@ -53,6 +56,16 @@ class PREditDialog(Adw.Window):
         self.name_entry.connect("changed", self._on_name_changed)
         group.add(self.name_entry)
         box.append(group)
+
+        settings_group = Adw.PreferencesGroup(
+            title="Emulator settings",
+            description="Shared with other builds of the same repo unless renamed.",
+        )
+        self.config_key_entry = Adw.EntryRow(title="Settings folder")
+        self.config_key_entry.set_text(self._current_config_key())
+        self.config_key_entry.connect("changed", self._on_config_key_changed)
+        settings_group.add(self.config_key_entry)
+        box.append(settings_group)
 
         self.status_label = Gtk.Label(label="")
         self.status_label.set_wrap(True)
@@ -83,8 +96,38 @@ class PREditDialog(Adw.Window):
     def _on_name_changed(self, *_args):
         self._name_touched = True
 
+    def _current_config_key(self):
+        key = (self.project.get("config_key") or "").strip()
+        return key or self._derived_config_key()
+
+    def _derived_config_key(self):
+        parsed = parse_pr_url(self.url_entry.get_text().strip())
+        if parsed is None:
+            return ""
+        return source_key(
+            {
+                "source_url": f"{parsed['scheme']}://{parsed['web_host']}/"
+                f"{parsed['owner']}/{parsed['repo']}.git"
+            }
+        )
+
+    def _on_config_key_changed(self, *_args):
+        if not self._updating_config:
+            self._config_key_touched = True
+
+    def _sync_config_key(self):
+        """Follow the PR's repo while the field has not been edited by hand."""
+        if self._config_key_touched:
+            return
+        self._updating_config = True
+        try:
+            self.config_key_entry.set_text(self._derived_config_key())
+        finally:
+            self._updating_config = False
+
     def _on_url_changed(self, *_args):
         self._schedule_lookup()
+        self._sync_config_key()
 
     def _schedule_lookup(self):
         self._lookup_seq += 1
@@ -164,6 +207,12 @@ class PREditDialog(Adw.Window):
 
     def _save_done(self, project):
         self._fetching = False
+        project["config_key"] = source_key(
+            {
+                "config_key": self.config_key_entry.get_text().strip(),
+                "source_url": project.get("source_url"),
+            }
+        )
         old_id = self.project.get("id")
         if self.on_save:
             self.on_save(project, old_id)

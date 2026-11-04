@@ -972,7 +972,7 @@ class LauncherWindow(Adw.ApplicationWindow):
             GLib.idle_add(self._hide_to_tray)
         elif hide == "taskbar":
             GLib.idle_add(minimize_to_taskbar, self)
-        return self._launched(launch(path))
+        return self._launched(launch(path, self.cfg))
 
     def _launched(self, proc):
         """Wait for the emulator to exit, then restore the window if we hid it.

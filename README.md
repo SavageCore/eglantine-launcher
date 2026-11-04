@@ -50,6 +50,26 @@ Pick the branch, then Save.
 Click the globe icon on a source to open its repo. Sources with only Windows
 builds automatically offer build-from-source only on Linux.
 
+## Per-source settings
+
+Each source keeps its own emulator settings, so forks with diverging config
+options do not overwrite each other. The launcher hands every source its own
+`XDG_CONFIG_HOME`, and the emulator reads and writes
+`~/.config/eglantine-launcher/sources/<name>/eden/` (`qt-config.ini`,
+`gui_config.ini`, window state and custom layouts).
+
+The folder is named after the repo, so a fork and its PR builds share one
+config. Edit "Settings folder" on a source to share settings between sources, or
+to keep two configs for the same repo.
+
+Games, saves, keys and shader caches stay shared in `~/.local/share/eden` and
+`~/.cache/eden`. The first time a source launches, its config starts as a copy
+of `~/.config/eden` and then diverges. Deleting the entry in the source's
+Storage tab resets it to emulator defaults.
+
+On Windows the emulator keeps its settings and data in a `user` folder next to
+the executable, which is already per source.
+
 ## GitHub API token (optional)
 
 GitHub allows ~60 API requests/hour per IP without a token, which release

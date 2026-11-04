@@ -692,13 +692,15 @@ def test_launch_now_hides_just_before_launch(needs_display, fake_home, monkeypat
         scheduled = []
         monkeypatch.setattr(GLib, "idle_add", lambda fn, *a: scheduled.append((fn, a)) or 0)
         launched_with = []
-        monkeypatch.setattr(winmod, "launch", lambda path: launched_with.append(path) or "proc")
+        monkeypatch.setattr(
+            winmod, "launch", lambda path, cfg=None: launched_with.append((path, cfg)) or "proc"
+        )
         finished_with = []
         monkeypatch.setattr(window, "_launched", lambda proc: finished_with.append(proc) or True)
 
         window._launch_hide = "tray"
         assert window._launch_now("/tmp/eglantine") is True
-        assert launched_with == ["/tmp/eglantine"]
+        assert launched_with == [("/tmp/eglantine", window.cfg)]
         assert finished_with == ["proc"]
         assert len(scheduled) == 3
         assert getattr(scheduled[1][0], "__name__", "") == "_dismiss_toasts"

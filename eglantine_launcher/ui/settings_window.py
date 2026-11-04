@@ -18,11 +18,13 @@ from ..tasks import (
     get_default_branch,
     infer_releases_url,
     list_branches,
+    move_source_config,
     parse_repo,
     project_storage,
     remove_project_data,
     should_fetch_branch_dates,
     sort_branch_names,
+    source_key,
 )
 from ..tray import ASK_LABEL, CLOSE_CHOICES, LAUNCH_CHOICES
 
@@ -93,7 +95,7 @@ class ProjectEditDialog(Adw.Window):
 
     def __init__(self, parent, project=None, on_save=None, prefill=None, cfg=None, on_storage_changed=None):
         super().__init__(transient_for=parent, modal=True, title="Edit source" if project else "New source")
-        self.set_default_size(480, 420)
+        self.set_default_size(480, -1)
         self.on_save = on_save
         self.on_storage_changed = on_storage_changed
         self.project = dict(project) if project else {}
@@ -118,10 +120,6 @@ class ProjectEditDialog(Adw.Window):
         self.source_entry.set_text(self.project.get("source_url", prefill.get("source_url", "")))
         group.add(self.source_entry)
 
-        settings_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        settings_page.append(group)
-
-        group2 = Adw.PreferencesGroup()
         self.branch_row = Adw.ComboRow(title="Branch")
         if hasattr(self.branch_row, "set_enable_search"):
             self.branch_row.set_enable_search(True)
@@ -139,39 +137,60 @@ class ProjectEditDialog(Adw.Window):
         self._branches = branches
         self.branch_row.set_model(Gtk.StringList.new(branches))
         self.branch_row.set_selected(branches.index(current) if current in branches else 0)
-        group2.add(self.branch_row)
+        group.add(self.branch_row)
+
+        settings_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        settings_page.append(group)
         if parse_repo(self._source_url)[0] == "github" and len(branches) > 1:
             threading.Thread(target=self._refresh_github_order, daemon=True).start()
 
+        releases_group = Adw.PreferencesGroup(
+            title="Releases",
+            description="Auto-filled from the repo link. Leave empty to build from source only.",
+        )
         self.releases_entry = Adw.EntryRow(title="Releases URL")
         self.releases_entry.set_text(self.project.get("releases_url") or prefill.get("releases_url") or "")
-        group2.add(self.releases_entry)
+        releases_group.add(self.releases_entry)
 
         self.prerelease_row = Adw.SwitchRow(title="Include pre-releases")
         self.prerelease_row.set_active(
             self.project.get("include_prerelease", prefill.get("include_prerelease", True))
         )
-        group2.add(self.prerelease_row)
+        releases_group.add(self.prerelease_row)
 
         self.exclude_entry = Adw.EntryRow(title="Exclude keywords")
         self.exclude_entry.set_text(
             self.project.get("exclude_keywords", prefill.get("exclude_keywords", "")) or ""
         )
-        group2.add(self.exclude_entry)
+        releases_group.add(self.exclude_entry)
+        settings_page.append(releases_group)
 
-        self.icon_entry = Adw.EntryRow(title="Icon URL (for desktop shortcut)")
+        shortcut_group = Adw.PreferencesGroup(
+            title="Shortcut",
+            description="Icon used for the Desktop, Start Menu and Steam shortcut.",
+        )
+        self.icon_entry = Adw.EntryRow(title="Icon URL")
         self.icon_entry.set_text(self.project.get("icon_url", "") or "")
-        group2.add(self.icon_entry)
-        settings_page.append(group2)
+        shortcut_group.add(self.icon_entry)
+        settings_page.append(shortcut_group)
 
-        hint = Gtk.Label(label="Releases auto-fill from the repo link. Leave empty for source-only forks.")
-        hint.set_wrap(True)
-        hint.add_css_class("dim-label")
-        settings_page.append(hint)
+        settings_group = Adw.PreferencesGroup(
+            title="Emulator settings",
+            description="Each source has its own folder in "
+            "~/.config/eglantine-launcher/sources. Use the same name on two "
+            "sources to share settings.",
+        )
+        self.config_key_entry = Adw.EntryRow(title="Settings folder")
+        self.config_key_entry.set_text(self._current_config_key())
+        self.config_key_entry.set_tooltip_text(
+            "Folder under ~/.config/eglantine-launcher/sources holding this source's emulator settings."
+        )
+        settings_group.add(self.config_key_entry)
+        settings_page.append(settings_group)
 
         if self._pid:
             stack = Gtk.Stack()
-            stack.add_titled(settings_page, "settings", "Settings")
+            stack.add_titled(self._scrolled(settings_page), "settings", "Settings")
             self._storage_group = Adw.PreferencesGroup(
                 title="On-disk data",
                 description="Delete downloads or checkouts you no longer need. "
@@ -183,7 +202,7 @@ class ProjectEditDialog(Adw.Window):
             self._storage_status.add_css_class("dim-label")
             self._storage_status.set_wrap(True)
             storage_page.append(self._storage_status)
-            stack.add_titled(storage_page, "storage", "Storage")
+            stack.add_titled(self._scrolled(storage_page), "storage", "Storage")
             switcher = Gtk.StackSwitcher()
             switcher.set_stack(stack)
             switcher.set_halign(Gtk.Align.CENTER)
@@ -192,7 +211,7 @@ class ProjectEditDialog(Adw.Window):
             self._stack = stack
             self._refresh_storage()
         else:
-            box.append(settings_page)
+            box.append(self._scrolled(settings_page))
             self._stack = None
 
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -269,11 +288,14 @@ class ProjectEditDialog(Adw.Window):
         return action
 
     def _on_storage_delete_clicked(self, _btn, row):
+        body = row.get("confirm") or (
+            f"Removes {row.get('detail', '')}. The launcher re-downloads or re-clones it on next launch."
+        )
         dlg = Adw.MessageDialog(
             transient_for=self,
             modal=True,
             heading=f"Delete {row.get('label', 'data')}?",
-            body=f"Removes {row.get('detail', '')}. The launcher re-downloads or re-clones it on next launch.",
+            body=body,
         )
         dlg.add_response("cancel", "Cancel")
         dlg.add_response("delete", "Delete")
@@ -345,6 +367,25 @@ class ProjectEditDialog(Adw.Window):
         except Exception:
             pass
 
+    @staticmethod
+    def _scrolled(child):
+        """Scroll long pages instead of growing past the screen."""
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_propagate_natural_height(True)
+        scrolled.set_max_content_height(720)
+        scrolled.set_child(child)
+        return scrolled
+
+    def _current_config_key(self):
+        """Folder name this source uses now: its override, else the repo key."""
+        return (self.project.get("config_key") or "").strip() or source_key(
+            {
+                "id": self._pid or _slug(self.name_entry.get_text().strip() or "source"),
+                "source_url": self.source_entry.get_text().strip(),
+            }
+        )
+
     def _save(self, *_args):
         name = self.name_entry.get_text().strip()
         source_url = self.source_entry.get_text().strip()
@@ -363,6 +404,13 @@ class ProjectEditDialog(Adw.Window):
             "exclude_keywords": self.exclude_entry.get_text().strip(),
             "icon_url": self.icon_entry.get_text().strip() or None,
         }
+        config_key = self.config_key_entry.get_text().strip()
+        project["config_key"] = source_key({"config_key": config_key, "source_url": source_url})
+        # Editing a source must not make a deleted config reappear.
+        if self.project.get("config_seeded"):
+            project["config_seeded"] = True
+        if self._pid:
+            move_source_config(self._cfg, self.project, project["config_key"])
         if self.on_save:
             self.on_save(project, old_id)
         self.close()
@@ -797,7 +845,7 @@ class SettingsWindow(Adw.Window):
             transient_for=self,
             modal=True,
             heading=f"Remove {name}?",
-            body="Removes the source and everything downloaded for it, including the source checkout and desktop shortcut.",
+            body="Removes the source and its downloads, source checkout, desktop shortcut and emulator settings.",
         )
         dlg.add_response("cancel", "Cancel")
         dlg.add_response("remove", "Remove")

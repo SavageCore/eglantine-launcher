@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .config import config_dir as launcher_config_dir
 from .config import save as save_config
 
 _token_rejected = False
@@ -376,6 +377,10 @@ def make_pr_project(name, pr_url, details=None, existing=None):
     }
     if existing and existing.get("last_built_commit"):
         project["last_built_commit"] = existing["last_built_commit"]
+    if existing and existing.get("config_key"):
+        project["config_key"] = existing["config_key"]
+    if existing and existing.get("config_seeded"):
+        project["config_seeded"] = True
     return project
 
 
@@ -1132,6 +1137,18 @@ def remove_project_data(cfg, pid):
         remove_shortcut(cfg, pid)
     except Exception:
         pass
+    # Per-source emulator settings go too, unless another project (a PR
+    # build of the same fork, or a source sharing config_key) still uses them.
+    try:
+        info = next((p for p in cfg.get("projects", []) if p.get("id") == pid), None)
+        if info is not None:
+            key = source_key(info)
+            shared = any(source_key(p) == key for p in cfg.get("projects", []) if p.get("id") != pid)
+            home = source_config_home(info)
+            if not shared and home.is_dir():
+                shutil.rmtree(home)
+    except Exception:
+        pass
 
 
 def remove_pr_project(cfg, pid):
@@ -1250,6 +1267,27 @@ def project_storage(cfg, pid):
                     "in_use": bool(in_source_use),
                 }
             )
+    info = next((p for p in cfg.get("projects", []) if p.get("id") == pid), None)
+    if info is not None:
+        home = source_config_home(info)
+        if home.is_dir():
+            rows.append(
+                {
+                    "kind": "config",
+                    "pid": pid,
+                    "label": "Emulator config",
+                    "detail": str(home),
+                    "size": dir_size(home),
+                    "path": str(home),
+                    # Settings are safe to reset while the launcher is open:
+                    # the emulator rewrites them from defaults next launch.
+                    "in_use": False,
+                    "confirm": (
+                        f"Removes {home}. Games, saves and keys are kept; "
+                        "the emulator starts with default settings next launch."
+                    ),
+                }
+            )
     return rows
 
 
@@ -1301,11 +1339,108 @@ def delete_storage_row(cfg, row):
                     p["last_built_commit"] = None
             save_config(cfg)
         return None
+    if kind == "config":
+        info = next((p for p in cfg.get("projects", []) if p.get("id") == pid), None)
+        target = Path(row.get("path") or "")
+        if info is None or target != source_config_home(info):
+            return "Refusing: path is outside the project data dirs."
+        try:
+            if target.is_dir():
+                shutil.rmtree(target)
+        except OSError as e:
+            return f"Could not delete: {e}"
+        # Keep it deleted: without the flag the next launch re-seeds it
+        # from the shared config the user was trying to get away from.
+        info["config_seeded"] = True
+        save_config(cfg)
+        return None
     return "Unknown storage entry."
 
 
 def source_dir(cfg):
     return Path(cfg["source_dir"]) / cfg.get("project", "eglantine")
+
+
+# Eden and its forks read their settings from ``$XDG_CONFIG_HOME/eden``.
+# The launcher hands each source its own XDG_CONFIG_HOME so forks with
+# diverging options keep their own files.
+EMULATOR_CONFIG_DIR = "eden"
+
+
+def _config_slug(text):
+    import re
+
+    slug = re.sub(r"[^a-z0-9]+", "-", str(text or "").lower()).strip("-")
+    return slug or "source"
+
+
+def source_key(info):
+    """Folder name for a source's own emulator config.
+
+    Keyed by repo identity rather than project id so a fork and its PR
+    builds share one config, and renaming a source keeps its settings.
+    ``config_key`` on the project overrides the derived name.
+    """
+    info = info or {}
+    override = (info.get("config_key") or "").strip()
+    if override:
+        return _config_slug(override)
+    host, owner, repo = parse_repo(info.get("source_url"))
+    if host and owner and repo:
+        return _config_slug(f"{host}-{owner}-{repo}")
+    return _config_slug(f"project-{info.get('id') or 'default'}")
+
+
+def source_config_home(info):
+    """XDG_CONFIG_HOME handed to the emulator for one source."""
+    return launcher_config_dir() / "sources" / source_key(info)
+
+
+def source_config_dir(info):
+    """The emulator's own config folder inside a source's config home."""
+    return source_config_home(info) / EMULATOR_CONFIG_DIR
+
+
+def move_source_config(cfg, info, new_key):
+    """Rename a source's config folder when its key changes.
+
+    Only moves a folder nobody else uses, and never over an existing one:
+    pointing a source at another source's folder is how settings are shared.
+    """
+    old = source_config_home(info)
+    if not old.is_dir():
+        return
+    new = launcher_config_dir() / "sources" / new_key
+    if new.exists():
+        return
+    key = source_key(info)
+    if any(p.get("id") != info.get("id") and source_key(p) == key for p in cfg.get("projects", [])):
+        return
+    new.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(old), str(new))
+
+
+def seed_source_config(cfg, info):
+    """Give a source its own emulator config the first time it launches.
+
+    Copies the shared config (``$XDG_CONFIG_HOME/eden``) so a fork starts
+    from settings the user already tuned, then diverges. Runs once per
+    source: ``config_seeded`` stops a config deleted from Storage being
+    restored on the next launch.
+    """
+    home = source_config_home(info)
+    home.mkdir(parents=True, exist_ok=True)
+    if (info or {}).get("config_seeded"):
+        return home
+    legacy = launcher_config_dir().parent / EMULATOR_CONFIG_DIR
+    try:
+        if not source_config_dir(info).exists() and legacy.is_dir():
+            shutil.copytree(legacy, source_config_dir(info))
+    finally:
+        info["config_seeded"] = True
+        if isinstance(cfg, dict) and "projects" in cfg:
+            save_config(cfg)
+    return home
 
 
 def check_release(cfg, progress_cb=None, status_cb=None, tag=None):
@@ -2205,18 +2340,43 @@ def check_build_deps():
     return results
 
 
-def _on_host(cmd):
-    """Run cmd on the host when sandboxed (flatpak), else directly."""
+def _on_host(cmd, env=None):
+    """Run cmd on the host when sandboxed (flatpak), else directly.
+
+    ``env`` is forwarded explicitly for flatpak: flatpak-spawn does not
+    pass the caller's environment through to the host process.
+    """
     if os.environ.get("FLATPAK_ID") and shutil.which("flatpak-spawn"):
-        return ["flatpak-spawn", "--host", *cmd]
+        flags = [f"--env={k}={v}" for k, v in (env or {}).items()]
+        return ["flatpak-spawn", "--host", *flags, *cmd]
     return cmd
 
 
-def launch(path):
-    """Start the emulator. Returns the child process, or None when unknown."""
+def launch(path, cfg=None):
+    """Start the emulator with this source's own config folder.
+
+    Returns the child process, or None when it cannot be tracked.
+    """
     path = Path(path)
+    info = project_info(cfg) if isinstance(cfg, dict) else {}
+    try:
+        home = seed_source_config(cfg, info) if isinstance(cfg, dict) else source_config_home(info)
+    except OSError:
+        # A config folder that cannot be written must not block the launch.
+        home = source_config_home(info)
     if is_windows():
+        # Windows has no XDG. Portable mode keys off a ``user`` dir next to
+        # the exe, and the launcher already keeps one exe dir per source.
+        try:
+            (path.parent / "user").mkdir(exist_ok=True)
+        except OSError:
+            pass
         os.startfile(str(path))
         return None
     os.chmod(path, 0o755)
-    return subprocess.Popen(_on_host([str(path)]), start_new_session=True)
+    env = {"XDG_CONFIG_HOME": str(home)}
+    return subprocess.Popen(
+        _on_host([str(path)], env=env),
+        env={**os.environ, **env},
+        start_new_session=True,
+    )
