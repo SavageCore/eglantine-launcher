@@ -1456,6 +1456,103 @@ def test_ensure_source_pr_fetch_falls_back_to_pulls(monkeypatch, tmp_path, fake_
     assert fetched == ["+pull/55/head:pr-55", "+pulls/55/head:pr-55"]
 
 
+def test_ensure_source_pr_stale_sha_falls_back_to_latest(monkeypatch, tmp_path, fake_home):
+    from eglantine_launcher import tasks
+
+    old, new = "a" * 40, "b" * 40
+    src = tmp_path / "src" / "pr-x"
+    (src / ".git").mkdir(parents=True)
+    cfg = {
+        "project": "pr-x",
+        "source_dir": str(tmp_path / "src"),
+        "projects": [
+            {
+                "id": "pr-x",
+                "is_pr": True,
+                "pr_number": 366,
+                "source_url": "https://github.com/o/r.git",
+                "pr_head_sha": old,
+            }
+        ],
+    }
+    checkouts = []
+    logged = []
+
+    def fake_run_logged(cmd, log_cb=None, cancelled=None, check=True, progress_cb=None):
+        if "checkout" in cmd:
+            checkouts.append(cmd[-1])
+        return None
+
+    def fake_out(cmd, **kw):
+        text = " ".join(str(c) for c in cmd)
+        if "remote" in cmd:
+            return "https://github.com/o/r.git\n"
+        if "cat-file" in cmd:
+            assert old in text
+            raise Exception(f"fatal: unable to read tree ({old})")
+        if cmd[-2:] == ["rev-parse", "pr-366"]:
+            return new + "\n"
+        if cmd[-2:] == ["rev-parse", "HEAD"]:
+            return new + "\n"
+        if "--verify" in cmd:
+            return "ok\n"
+        raise AssertionError(f"unexpected git call: {text}")
+
+    monkeypatch.setattr(tasks, "_run_logged", fake_run_logged)
+    monkeypatch.setattr(tasks, "_host_check_output", fake_out)
+    _, commit = tasks.ensure_source(cfg, log_cb=logged.append, status_cb=logged.append)
+    assert commit == new
+    assert checkouts == ["pr-366"]
+    assert any("rebased" in m for m in logged)
+    assert cfg["projects"][0]["pr_head_sha"] == new
+
+
+def test_ensure_source_pr_explicit_stale_commit_falls_back(monkeypatch, tmp_path, fake_home):
+    from eglantine_launcher import tasks
+
+    old, new = "c" * 40, "d" * 40
+    src = tmp_path / "src" / "pr-x"
+    (src / ".git").mkdir(parents=True)
+    cfg = {
+        "project": "pr-x",
+        "source_dir": str(tmp_path / "src"),
+        "projects": [
+            {
+                "id": "pr-x",
+                "is_pr": True,
+                "pr_number": 366,
+                "source_url": "https://github.com/o/r.git",
+                "pr_head_sha": old,
+            }
+        ],
+    }
+    checkouts = []
+
+    def fake_run_logged(cmd, log_cb=None, cancelled=None, check=True, progress_cb=None):
+        if "checkout" in cmd:
+            checkouts.append(cmd[-1])
+        return None
+
+    def fake_out(cmd, **kw):
+        if "remote" in cmd:
+            return "https://github.com/o/r.git\n"
+        if "cat-file" in cmd:
+            raise Exception("missing")
+        if cmd[-2:] == ["rev-parse", "pr-366"]:
+            return new + "\n"
+        if cmd[-2:] == ["rev-parse", "HEAD"]:
+            return new + "\n"
+        if "--verify" in cmd:
+            return "ok\n"
+        raise AssertionError(f"unexpected git call: {cmd}")
+
+    monkeypatch.setattr(tasks, "_run_logged", fake_run_logged)
+    monkeypatch.setattr(tasks, "_host_check_output", fake_out)
+    _, commit = tasks.ensure_source(cfg, commit=old)
+    assert commit == new
+    assert checkouts == ["pr-366"]
+
+
 def test_run_logged_streams_output_and_command(monkeypatch):
     from eglantine_launcher import tasks
 

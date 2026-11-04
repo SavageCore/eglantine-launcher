@@ -1485,7 +1485,37 @@ def _ensure_pr_source(
             raise RuntimeError(f"Could not fetch PR #{number} (is it still open?).")
     if cancelled and cancelled():
         raise BuildCancelled("Build cancelled.")
-    target = commit or info.get("pr_head_sha") or f"pr-{number}"
+    ref = f"pr-{number}"
+    requested = commit or info.get("pr_head_sha")
+    target = requested or ref
+    if requested and requested != ref:
+        try:
+            _host_check_output(["git", "-C", str(src), "cat-file", "-e", requested], text=True)
+        except Exception:
+            try:
+                latest = _host_check_output(["git", "-C", str(src), "rev-parse", ref], text=True).strip()
+            except Exception:
+                latest = ""
+            short_old = requested[:7] if len(requested) >= 7 else requested
+            short_new = latest[:7] if len(latest) >= 7 else ref
+            msg = f"Cached PR head {short_old} missing (PR was rebased?); using latest {short_new} instead."
+            if status_cb:
+                try:
+                    status_cb(msg)
+                except Exception:
+                    pass
+            if log_cb:
+                try:
+                    log_cb(msg)
+                except Exception:
+                    pass
+            if latest:
+                info["pr_head_sha"] = latest
+                try:
+                    save_config(cfg)
+                except Exception:
+                    pass
+            target = ref
     _run_logged(
         ["git", "-C", str(src), "checkout", target],
         log_cb=log_cb,
