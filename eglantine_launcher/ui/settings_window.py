@@ -681,7 +681,7 @@ class SettingsWindow(Adw.Window):
         token = self.token_entry.get_text().strip()
         if not token:
             self.cfg["github_token"] = None
-            self.cfg.pop("github_token_rejected", None)
+            self.cfg["github_token_rejected"] = False
             save_config(self.cfg)
             self._set_token_status("")
             return
@@ -711,7 +711,7 @@ class SettingsWindow(Adw.Window):
 
         tasks.token_accepted()
         self.cfg["github_token"] = token
-        self.cfg.pop("github_token_rejected", None)
+        self.cfg["github_token_rejected"] = False
         save_config(self.cfg)
         self._set_token_status("Verified and saved.", "success", timeout=8)
 

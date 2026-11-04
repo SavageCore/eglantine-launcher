@@ -24,6 +24,11 @@ def config_file():
     return config_dir() / "config.json"
 
 
+# Set on every dict returned by load(): the file it came from. save() writes
+# back there even if the environment changed in between, and never stores it.
+_CONFIG_PATH_KEY = "_config_path"
+
+
 def _default_exclude_keywords():
     # Eglantine marks vendor-specific test builds in the release title/body
     # (e.g. "AMD Experimental Build"); hide the other vendor's builds.
@@ -102,10 +107,16 @@ def load():
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         cfg = default_config()
+        cfg[_CONFIG_PATH_KEY] = str(path)
         save(cfg)
         return cfg
     try:
         cfg = {**default_config(), **json.loads(path.read_text())}
+        # A config remembers the file it came from, so a worker thread that
+        # saves after the process environment changed (tests redirecting
+        # HOME/XDG) writes back where it read from, never to the real file.
+        cfg.pop(_CONFIG_PATH_KEY, None)
+        cfg[_CONFIG_PATH_KEY] = str(path)
         if not cfg.get("projects"):
             cfg["projects"] = [p.copy() for p in DEFAULT_PROJECTS]
         else:
@@ -131,7 +142,9 @@ def load():
                 save(cfg)
         return cfg
     except Exception:
-        return default_config()
+        cfg = default_config()
+        cfg[_CONFIG_PATH_KEY] = str(path)
+        return cfg
 
 
 # Fields the remote registry is allowed to update on entries it manages.
@@ -175,9 +188,15 @@ def merge_remote_sources(cfg, remote):
 
 
 def save(cfg):
-    # Merge over defaults so a partial dict from any caller can never
-    # wipe out keys (projects, token, ...) it doesn't know about.
-    merged = {**default_config(), **cfg}
-    path = config_file()
+    # Merge over defaults and the file on disk so a partial or stale dict
+    # from any caller can never wipe out keys it doesn't know about (the
+    # GitHub token, a setting saved by another window, ...).
+    path = Path(cfg.get(_CONFIG_PATH_KEY) or config_file())
+    try:
+        on_disk = json.loads(path.read_text()) if path.exists() else {}
+    except Exception:
+        on_disk = {}
+    merged = {**default_config(), **on_disk, **cfg}
+    merged.pop(_CONFIG_PATH_KEY, None)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(merged, indent=2))

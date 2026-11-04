@@ -801,7 +801,7 @@ def test_settings_open_rechecks_rejected_token_ok(needs_display, fake_home, monk
         label = window._token_status_label
         assert label.get_visible() is True
         assert "Verified and saved." in label.get_label()
-        assert "github_token_rejected" not in load()
+        assert not load().get("github_token_rejected")
     finally:
         window.close()
 
