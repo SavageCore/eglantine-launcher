@@ -639,13 +639,18 @@ def list_branches(source_url, limit=100, cfg=None):
 
 
 def fetch_repo_name(source_url, cfg=None):
-    if not parse_repo(source_url)[2]:
+    _, owner, repo = parse_repo(source_url)
+    if not repo:
         return ""
     info = fetch_repo_info(source_url, cfg)
     if not info:
-        return parse_repo(source_url)[2]
-    name = info.get("name")
-    return name if isinstance(name, str) and name else parse_repo(source_url)[2]
+        name = repo
+    else:
+        raw = info.get("name")
+        name = raw if isinstance(raw, str) and raw else repo
+    if name.strip().lower() == "eglantine" and (owner or "").strip():
+        return owner.strip()
+    return name
 
 
 def release_platforms(cfg_or_project):
