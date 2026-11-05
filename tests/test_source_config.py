@@ -37,7 +37,7 @@ def test_source_key_falls_back_to_project_id():
 def test_source_config_home_is_under_launcher_config(fake_home):
     home = tasks.source_config_home({"source_url": "https://github.com/o/r.git"})
     assert home == fake_home / ".config" / "eglantine-launcher" / "sources" / "github-o-r"
-    assert tasks.source_config_dir({"source_url": "https://github.com/o/r.git"}) == home / "eden"
+    assert tasks.source_config_dir({"source_url": "https://github.com/o/r.git"}) == home / "eglantine"
 
 
 def test_seed_copies_legacy_config_once(fake_home):
@@ -49,13 +49,13 @@ def test_seed_copies_legacy_config_once(fake_home):
 
     home = tasks.seed_source_config(cfg, info)
 
-    assert (home / "eden" / "qt-config.ini").read_text() == "[UI]\n"
+    assert (home / "eglantine" / "qt-config.ini").read_text() == "[UI]\n"
     assert info["config_seeded"] is True
 
     # A config deleted from Storage stays deleted instead of being restored.
-    (home / "eden" / "qt-config.ini").unlink()
+    (home / "eglantine" / "qt-config.ini").unlink()
     tasks.seed_source_config(cfg, info)
-    assert not (home / "eden" / "qt-config.ini").exists()
+    assert not (home / "eglantine" / "qt-config.ini").exists()
 
 
 def test_seed_without_legacy_config_still_creates_home(fake_home):
@@ -224,7 +224,7 @@ def test_move_source_config_never_overwrites(fake_home):
 def _save_cfg(fake_home, tmp_path):
     install = tmp_path / "install"
     cfg = {"install_dir": str(install), "projects": []}
-    saves = fake_home / ".local" / "share" / "eden" / "nand" / "user" / "save"
+    saves = fake_home / ".local" / "share" / "eglantine" / "nand" / "user" / "save"
     (saves / "0000000000000000" / "user1" / "0100000000000000").mkdir(parents=True)
     (saves / "0000000000000000" / "user1" / "0100000000000000" / "file0").write_text("progress")
     return cfg
@@ -305,6 +305,102 @@ def test_save_backup_guards_reject_foreign_paths(fake_home, tmp_path):
     assert tasks.delete_save_backup(cfg, "../elsewhere") is not None
     assert tasks.delete_save_backup(cfg, "") is not None
     assert tasks.restore_save_backup(cfg, "") is not None
+
+
+def test_emulator_save_dir_uses_canonical_name(fake_home):
+    assert str(tasks.emulator_save_dir({})).endswith("share/eglantine/nand/user/save")
+
+
+def test_legacy_eden_saves_are_promoted_to_canonical(fake_home, tmp_path):
+    base = fake_home / ".local" / "share"
+    legacy_save = base / "eden" / "nand" / "user" / "save"
+    (legacy_save / "user1").mkdir(parents=True)
+    (legacy_save / "user1" / "file0").write_text("progress")
+    cfg = {"install_dir": str(tmp_path / "install"), "projects": []}
+
+    dest = tasks.backup_saves(cfg)
+
+    assert dest is not None
+    assert (base / "eglantine" / "nand" / "user" / "save" / "user1" / "file0").read_text() == "progress"
+    assert (base / "eden").is_symlink()
+    assert tasks.emulator_save_dir(cfg).is_relative_to(base / "eglantine")
+
+
+def test_diverged_save_trees_merge_newer_wins(fake_home):
+    import os
+    import time
+
+    base = fake_home / ".local" / "share"
+    old_save = base / "eden" / "nand" / "user" / "save"
+    new_save = base / "eglantine" / "nand" / "user" / "save"
+    (old_save / "user1").mkdir(parents=True)
+    (new_save / "user1").mkdir(parents=True)
+    (old_save / "user1" / "old-only").write_text("kept")
+    (new_save / "user1" / "new-only").write_text("kept")
+    (old_save / "user1" / "shared").write_text("old-build")
+    (new_save / "user1" / "shared").write_text("new-build")
+    now = time.time()
+    os.utime(old_save / "user1" / "shared", (now - 100, now - 100))
+
+    tasks.migrate_emulator_dirs({})
+
+    merged = base / "eglantine" / "nand" / "user" / "save" / "user1"
+    assert (merged / "old-only").read_text() == "kept"
+    assert (merged / "new-only").read_text() == "kept"
+    assert (merged / "shared").read_text() == "new-build"
+    assert (base / "eden").is_symlink()
+    # Second run is a no-op and keeps content intact.
+    tasks.migrate_emulator_dirs({})
+    assert (merged / "shared").read_text() == "new-build"
+    assert (base / "eden").is_symlink()
+
+
+def test_legacy_eden_config_links_into_source_home(fake_home):
+    cfg = {"projects": [{"id": "p", "source_url": "https://github.com/o/r.git"}]}
+    info = cfg["projects"][0]
+    home = tasks.source_config_home(info)
+    (home / "eden").mkdir(parents=True)
+    (home / "eden" / "qt-config.ini").write_text("[UI]\n")
+
+    tasks.seed_source_config(cfg, info)
+
+    assert (home / "eglantine" / "qt-config.ini").read_text() == "[UI]\n"
+    assert (home / "eden").is_symlink()
+
+
+def test_seed_prefers_eglantine_shared_config(fake_home):
+    new = fake_home / ".config" / "eglantine"
+    new.mkdir(parents=True)
+    (new / "qt-config.ini").write_text("[new]\n")
+    legacy = fake_home / ".config" / "eden"
+    legacy.mkdir(parents=True)
+    (legacy / "qt-config.ini").write_text("[old]\n")
+    cfg = {"projects": [{"id": "p", "source_url": "https://github.com/o/r.git"}]}
+
+    home = tasks.seed_source_config(cfg, cfg["projects"][0])
+
+    assert (home / "eglantine" / "qt-config.ini").read_text() == "[new]\n"
+
+
+def test_migrate_links_known_homes_for_all_projects(fake_home):
+    base = fake_home / ".local" / "share"
+    (base / "eden" / "nand").mkdir(parents=True)
+    cfg = {
+        "projects": [
+            {"id": "a", "source_url": "https://github.com/o/a.git"},
+            {"id": "b", "source_url": "https://github.com/o/a.git", "config_key": "shared"},
+        ]
+    }
+    home = tasks.source_config_home(cfg["projects"][0])
+    home.mkdir(parents=True)
+    (home / "eden").mkdir()
+
+    tasks.migrate_emulator_dirs(cfg)
+
+    assert (base / "eden").is_symlink()
+    assert (base / "lichii").is_symlink()
+    assert (home / "eden").is_symlink()
+    assert (home / "eglantine").is_dir()
 
 
 def test_format_backup_name_localizes_utc():

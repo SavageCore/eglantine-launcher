@@ -35,6 +35,7 @@ from ..tasks import (
     launcher_update_asset,
     list_commits,
     list_releases,
+    migrate_emulator_dirs,
     open_url,
     pr_version_entries,
     refresh_pr_project,
@@ -71,6 +72,9 @@ class LauncherWindow(Adw.ApplicationWindow):
     def __init__(self, app, auto=False):
         super().__init__(application=app, title="Eglantine Launcher")
         self.cfg = load_config()
+        # One-time cutover (then a no-op): legacy/fork emulator dir names
+        # become links to the canonical one so saves stay global.
+        migrate_emulator_dirs(self.cfg)
         try:
             win_w = int(self.cfg.get("window_width") or 640)
             win_h = self.cfg.get("window_height")

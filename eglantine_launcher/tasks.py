@@ -1366,10 +1366,13 @@ def source_dir(cfg):
     return Path(cfg["source_dir"]) / cfg.get("project", "eglantine")
 
 
-# Eden and its forks read their settings from ``$XDG_CONFIG_HOME/eden``.
-# The launcher hands each source its own XDG_CONFIG_HOME so forks with
-# diverging options keep their own files.
-EMULATOR_CONFIG_DIR = "eden"
+# Canonical emulator data dir name. The 4f3de82 rename moved Eglantine from
+# ``eden`` to ``eglantine``; other forks still use ``eden`` (and Lichii may
+# move to ``lichii``). Every name in EMULATOR_DIR_ALIASES is kept as a symlink
+# to the canonical dir so saves and settings stay shared no matter which
+# build last ran. Nothing here needs per-build version detection.
+EMULATOR_CONFIG_DIR = "eglantine"
+EMULATOR_DIR_ALIASES = ("eden", "lichii")
 
 
 def _config_slug(text):
@@ -1404,6 +1407,142 @@ def source_config_home(info):
 def source_config_dir(info):
     """The emulator's own config folder inside a source's config home."""
     return source_config_home(info) / EMULATOR_CONFIG_DIR
+
+
+def _merge_tree(src, dst):
+    """Fold src into dst so nothing is lost; newer files win conflicts.
+
+    Missing files/dirs are copied, files present on both sides keep the
+    newer mtime. Inner symlinks are replicated, never followed.
+    """
+    src, dst = Path(src), Path(dst)
+    for root, dirs, files in os.walk(src, followlinks=False):
+        rel = Path(root).relative_to(src)
+        target_dir = dst / rel
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        # Replicate symlinked dirs as links; never descend into them.
+        for name in list(dirs):
+            link = Path(root) / name
+            if link.is_symlink():
+                dirs.remove(name)
+                dest = target_dir / name
+                try:
+                    if not dest.exists() and not dest.is_symlink():
+                        dest.symlink_to(os.readlink(link))
+                except OSError:
+                    pass
+        for name in files:
+            s = Path(root) / name
+            d = target_dir / name
+            try:
+                if s.is_symlink():
+                    if not d.exists() and not d.is_symlink():
+                        d.symlink_to(os.readlink(s))
+                    continue
+                if d.is_symlink():
+                    d.unlink()
+                if not d.exists():
+                    shutil.copy2(s, d)
+                    continue
+                if s.stat().st_mtime > d.stat().st_mtime + 1:
+                    shutil.copy2(s, d)
+            except OSError:
+                continue
+
+
+def ensure_emulator_dir_links(base):
+    """Point legacy/fork emulator dir names at the canonical one.
+
+    ``base`` is a data/config home (``$XDG_DATA_HOME`` or a source's config
+    home). After this, ``base/eden`` (and ``base/lichii``) are symlinks to
+    ``base/eglantine``: old builds, new builds and not-yet-renamed forks all
+    read and write the same tree, so saves and settings stay global.
+
+    A real legacy dir is promoted when the canonical one is missing,
+    otherwise merged (newer wins) and replaced. Never raises; returns the
+    canonical path. No-op on Windows (portable ``user`` tree).
+    """
+    base = Path(base)
+    canonical = base / EMULATOR_CONFIG_DIR
+    try:
+        if is_windows():
+            return canonical
+        base.mkdir(parents=True, exist_ok=True)
+        if canonical.is_symlink():
+            if canonical.exists():
+                return canonical  # user-custom link; leave it alone
+            canonical.unlink()  # broken link; rebuild below
+        if canonical.exists() and not canonical.is_dir():
+            return canonical  # a file blocks the name; leave it
+        if not canonical.is_dir():
+            for alias in EMULATOR_DIR_ALIASES:
+                p = base / alias
+                if p.is_symlink() or not p.is_dir():
+                    continue
+                try:
+                    p.rename(canonical)
+                except OSError:
+                    continue
+                break
+            else:
+                canonical.mkdir(parents=True, exist_ok=True)
+        for alias in EMULATOR_DIR_ALIASES:
+            p = base / alias
+            try:
+                if p.is_symlink():
+                    try:
+                        if p.resolve() == canonical.resolve():
+                            continue
+                    except OSError:
+                        pass
+                    if p.exists():
+                        continue  # points elsewhere (user custom); leave it
+                    p.unlink()  # broken link; repoint below
+                elif p.is_dir():
+                    _merge_tree(p, canonical)
+                    shutil.rmtree(p, ignore_errors=True)
+                elif p.exists():
+                    continue  # a file, not a dir; leave it
+                if not p.exists() and not p.is_symlink():
+                    p.symlink_to(canonical.name)
+            except OSError:
+                continue
+    except Exception:
+        pass
+    return canonical
+
+
+def migrate_emulator_dirs(cfg=None):
+    """One-time-per-launch cutover to the canonical emulator dir name.
+
+    Links legacy/fork names to ``eglantine`` for global saves and every
+    known per-source config home (existing homes only; new ones are linked
+    by seed_source_config at first launch). Never raises.
+    """
+    try:
+        if is_windows():
+            return
+        ensure_emulator_dir_links(_data_home())
+        projects = (cfg or {}).get("projects", []) if isinstance(cfg, dict) else []
+        seen = set()
+        for info in projects:
+            try:
+                home = source_config_home(info)
+            except Exception:
+                continue
+            if home in seen:
+                continue
+            seen.add(home)
+            try:
+                if home.is_dir():
+                    ensure_emulator_dir_links(home)
+            except OSError:
+                continue
+    except Exception:
+        pass
 
 
 # Timestamped copies of the save tree kept here; newest SAVE_BACKUP_KEEP win.
@@ -1447,9 +1586,10 @@ def _project_binary(cfg):
 def emulator_save_dir(cfg=None, binary_path=None):
     """Live user game saves for the emulator about to launch.
 
-    Linux keeps them in ``$XDG_DATA_HOME/eden/nand/user/save`` no matter
-    which source runs. On Windows they live in the portable ``user`` tree
-    next to the executable, which is already per source.
+    Linux keeps them in ``$XDG_DATA_HOME/eglantine/nand/user/save`` no matter
+    which source runs (legacy ``eden``/``lichii`` names are symlinks there,
+    see ensure_emulator_dir_links). On Windows they live in the portable
+    ``user`` tree next to the executable, which is already per source.
     """
     if is_windows():
         exe = Path(binary_path) if binary_path else _project_binary(cfg or {})
@@ -1468,6 +1608,7 @@ def backup_saves(cfg, binary_path=None):
     Returns the backup path, or None when there was nothing to back up.
     """
     try:
+        ensure_emulator_dir_links(_data_home())
         src = emulator_save_dir(cfg, binary_path)
         if not src.is_dir():
             return None
@@ -1516,6 +1657,7 @@ def restore_save_backup(cfg, name, binary_path=None):
     if not name or src.parent != save_backup_root(cfg) or not src.is_dir():
         return "Unknown backup."
     try:
+        ensure_emulator_dir_links(_data_home())
         dst = emulator_save_dir(cfg, binary_path)
         dst.mkdir(parents=True, exist_ok=True)
         shutil.copytree(src, dst, dirs_exist_ok=True)
@@ -1546,23 +1688,32 @@ def move_source_config(cfg, info, new_key):
 def seed_source_config(cfg, info):
     """Give a source its own emulator config the first time it launches.
 
-    Copies the shared config (``$XDG_CONFIG_HOME/eden``) so a fork starts
-    from settings the user already tuned, then diverges. Runs once per
-    source: ``config_seeded`` stops a config deleted from Storage being
-    restored on the next launch.
+    Copies the shared config (``~/.config/eglantine``, falling back to the
+    pre-rename ``~/.config/eden``) so a fork starts from settings the user
+    already tuned, then diverges. Runs once per source: ``config_seeded``
+    stops a config deleted from Storage being restored on the next launch.
     """
     home = source_config_home(info)
     home.mkdir(parents=True, exist_ok=True)
+    ensure_emulator_dir_links(home)
     if (info or {}).get("config_seeded"):
         return home
-    legacy = launcher_config_dir().parent / EMULATOR_CONFIG_DIR
+    dst = source_config_dir(info)
     try:
-        if not source_config_dir(info).exists() and legacy.is_dir():
-            shutil.copytree(legacy, source_config_dir(info))
-    finally:
+        if not dst.is_dir() or not any(dst.iterdir()):
+            for legacy_name in (EMULATOR_CONFIG_DIR, *EMULATOR_DIR_ALIASES):
+                legacy = launcher_config_dir().parent / legacy_name
+                if legacy.is_dir():
+                    shutil.copytree(legacy, dst, dirs_exist_ok=True)
+                    break
+    except OSError:
+        pass
+    try:
         info["config_seeded"] = True
         if isinstance(cfg, dict) and "projects" in cfg:
             save_config(cfg)
+    except OSError:
+        pass
     return home
 
 
@@ -2483,9 +2634,11 @@ def launch(path, cfg=None):
     path = Path(path)
     info = project_info(cfg) if isinstance(cfg, dict) else {}
     try:
-        # Snapshot saves first: even a crashed run leaves a restorable copy.
-        # backup_saves never raises, so a broken backup dir can't block play.
+        # Link legacy/fork emulator dirs first so the snapshot below reads
+        # the canonical tree even when an old build ran last. backup_saves
+        # never raises, so a broken backup dir can't block play.
         if isinstance(cfg, dict):
+            migrate_emulator_dirs(cfg)
             backup_saves(cfg, path)
         home = seed_source_config(cfg, info) if isinstance(cfg, dict) else source_config_home(info)
     except OSError:
