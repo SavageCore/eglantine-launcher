@@ -1695,11 +1695,14 @@ class LauncherWindow(Adw.ApplicationWindow):
         )
         dialog.add_credit_section(
             "Fork guide",
-            ["wichforks by riyadhHDA - https://github.com/riyadhHDA/wichforks"],
+            ["wichforks by riyadhHDA https://github.com/riyadhHDA/wichforks"],
         )
         dialog.add_credit_section(
             "Title IDs",
-            ["Switchbrew - https://switchbrew.org/wiki/Switch_2:_Title_list/Games"],
+            ["Switchbrew https://switchbrew.org/wiki/Switch_2:_Title_list/Games"],
         )
-        dialog.set_follows_content_size(True)
+        # Fixed size for every page: with follows-content-size the Credits
+        # page would shrink to its narrow rows and jump around on navigation.
+        dialog.set_content_width(420)
+        dialog.set_content_height(560)
         dialog.present(self)
