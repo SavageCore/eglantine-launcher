@@ -105,11 +105,18 @@ def normalize_title_id(raw):
     return None
 
 
+def _sort_key(name):
+    import unicodedata
+
+    return unicodedata.normalize("NFD", name).casefold()
+
+
 def game_catalog(cfg=None):
     """Shipped games, updated by the remote registry, plus the user's own.
 
     Precedence: shipped < remote < custom. The registry lets new games
-    arrive without a rebuild; custom names always win.
+    arrive without a rebuild; custom names always win. Always
+    alphabetically ordered so remote-only additions slot into place.
     """
     catalog = dict(GAMES)
     for game in (cfg or {}).get("remote_games", []) or []:
@@ -119,7 +126,7 @@ def game_catalog(cfg=None):
         if isinstance(game, dict) and normalize_title_id(game.get("title_id") or ""):
             tid = normalize_title_id(game["title_id"])
             catalog[tid] = (game.get("name") or "").strip() or catalog.get(tid, tid)
-    return catalog
+    return dict(sorted(catalog.items(), key=lambda kv: _sort_key(kv[1])))
 
 
 def merge_remote_games(cfg, remote):

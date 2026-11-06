@@ -256,6 +256,19 @@ def test_game_catalog_merges_custom_games():
     assert catalog["0400C3F00006E000"] == "MKW Custom"
 
 
+def test_game_catalog_sorts_remote_only_games_into_place():
+    """Simulates an older build: remote-only ids must not trail at the end."""
+    remote = [
+        {"title_id": "0400C3F00006E000", "name": "Mario Kart World"},
+        {"title_id": "040032B023CA4000", "name": "Orbitals"},
+        {"title_id": "040074A01BF12000", "name": "Donkey Kong Bananza"},
+    ]
+    names = list(config.game_catalog({"remote_games": remote}).values())
+    assert names == sorted(names, key=config._sort_key)
+    assert names.index("Orbitals") < names.index("Pok\u00e9mon Legends: Z-A")
+    assert names.index("Nintendo Switch Sports Resort") < names.index("Orbitals")
+
+
 def test_game_catalog_remote_overrides_shipped_custom_wins():
     remote = [{"title_id": "0400C3F00006E000", "name": "Remote Name"}]
     custom = [{"title_id": "0400C3F00006E000", "name": "My Name"}]
