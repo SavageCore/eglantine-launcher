@@ -9,17 +9,25 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="$ROOT/docs/screenshots"
 DISP=:99
 
-pages=(main settings source_edit about pr_builds)
+pages=(main settings settings_sources settings_games settings_pr_builds source_edit source_edit_storage source_edit_tags about)
 flags_main=""
 flags_settings="--settings"
+flags_settings_sources="--settings --settings-page sources"
+flags_settings_games="--settings --settings-page games"
+flags_settings_pr_builds="--settings --settings-page prs"
 flags_source_edit="--edit-source"
+flags_source_edit_storage="--edit-source --edit-source-tab storage"
+flags_source_edit_tags="--edit-source --edit-source-tab tags"
 flags_about="--about"
-flags_pr_builds="--pr-builds"
 titles_main="Eglantine Launcher"
 titles_settings="Settings"
+titles_settings_sources="Settings"
+titles_settings_games="Settings"
+titles_settings_pr_builds="Settings"
 titles_source_edit="Edit source"
+titles_source_edit_storage="Edit source"
+titles_source_edit_tags="Edit source"
 titles_about="Eglantine Launcher"
-titles_pr_builds="PR Builds"
 
 export GDK_BACKEND=x11
 export PYTHONPATH="$ROOT:${PYTHONPATH:-}"
@@ -116,8 +124,22 @@ EOF
 shot() {
   local mode="$1" page="$2" extra="$3" title="$4" dest="$5"
   echo "capturing $mode/$page..."
-  if [ "$page" = "pr_builds" ]; then
+  if [ "$page" = "settings_pr_builds" ]; then
     seed_pr_dummies
+  fi
+  if [ "$page" = "about" ]; then
+    # the About dialog renders inside the main window and is taller than
+    # the default 460px: give it room, then put the size back afterwards
+    # so the other main-window shots stay compact.
+    DISPLAY=$DISP XDG_CONFIG_HOME="$SHOT_HOME/.config" python3 - <<EOF
+import json
+from pathlib import Path
+cfg = Path("$SHOT_HOME") / ".config" / "eglantine-launcher" / "config.json"
+data = json.loads(cfg.read_text()) if cfg.exists() else {}
+data["window_width"], data["window_height"] = 640, 760
+cfg.parent.mkdir(parents=True, exist_ok=True)
+cfg.write_text(json.dumps(data))
+EOF
   fi
   # the app quits itself after 8s: no kill races, no teardown segfaults,
   # no stale window ids for the next shot
@@ -148,6 +170,21 @@ shot() {
     return 1
   fi
   wait $app_pid 2>/dev/null || true
+  if [ "$page" = "about" ]; then
+    # put the compact size back for any later main-window shots
+    DISPLAY=$DISP XDG_CONFIG_HOME="$SHOT_HOME/.config" python3 - <<EOF
+import json
+from pathlib import Path
+cfg = Path("$SHOT_HOME") / ".config" / "eglantine-launcher" / "config.json"
+try:
+    data = json.loads(cfg.read_text())
+except Exception:
+    data = {}
+data.pop("window_width", None)
+data.pop("window_height", None)
+cfg.write_text(json.dumps(data))
+EOF
+  fi
 }
 
 for mode in light dark; do
