@@ -1488,7 +1488,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         else:
             if self._launcher_update_url:
                 dialog.add_response("open-release", "Open release page")
-            dialog.add_response("open-repos", "Open repo setup")
+            dialog.add_response("open-repos", "Open setup guide")
             dialog.set_default_response("open-repos")
         dialog.add_response("close", "Close")
         dialog.set_close_response("close")
@@ -1687,7 +1687,7 @@ class LauncherWindow(Adw.ApplicationWindow):
             application_icon="eglantine-launcher",
             version=__version__,
             comments="Simple launcher for Eglantine and forks. Checks for updates and builds from source. "
-            "Default sources curated from the wichforks fork guide; game title IDs from Switchbrew.",
+            "Game picks come from the wichforks guide.",
             website="https://github.com/SavageCore/eglantine-launcher",
             license_type=Gtk.License.GPL_3_0,
             copyright="© 2026 SavageCore",

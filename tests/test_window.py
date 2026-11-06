@@ -313,6 +313,26 @@ def test_settings_data_folder_opens_install_dir(needs_display, fake_home, monkey
         window.close()
 
 
+def test_games_page_lists_included_catalog(needs_display, fake_home):
+    from eglantine_launcher.ui.settings_window import SettingsWindow
+
+    window = SettingsWindow(None)
+    try:
+        window.show_page("games")
+        shipped = [r.get_title() for r in window._shipped_game_rows]
+        assert "Orbitals" in shipped
+        assert "Mario Kart World" in shipped
+        # custom games move out of the shipped list into Your games
+        window._custom_game_id_entry.set_text("0400999900000000")
+        window._custom_game_name_entry.set_text("Mine")
+        window._on_add_custom_game()
+        shipped = [r.get_title() for r in window._shipped_game_rows]
+        assert "Mine" not in shipped
+        assert any(r.get_title() == "Mine" for r in window._custom_game_rows)
+    finally:
+        window.close()
+
+
 def test_settings_games_page_add_remove(needs_display, fake_home):
     from eglantine_launcher.config import load
     from eglantine_launcher.ui.settings_window import SettingsWindow

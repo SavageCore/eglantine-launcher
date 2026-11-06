@@ -155,7 +155,7 @@ class ProjectEditDialog(Adw.Window):
 
         releases_group = Adw.PreferencesGroup(
             title="Releases",
-            description="Auto-filled from the repo link. Leave empty to build from source only.",
+            description="Auto-filled from the repository link. Leave empty to build from source only.",
         )
         self.releases_entry = Adw.EntryRow(title="Releases URL")
         self.releases_entry.set_text(self.project.get("releases_url") or prefill.get("releases_url") or "")
@@ -206,7 +206,7 @@ class ProjectEditDialog(Adw.Window):
             self._layout.add_page("settings", settings_page)
             self._storage_group = Adw.PreferencesGroup(
                 title="On-disk data",
-                description="Delete downloads or checkouts you no longer need. "
+                description="Delete downloads or source folders you no longer need. "
                 "Entries used by the current mode cannot be deleted.",
             )
             storage_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -421,9 +421,9 @@ class ProjectEditDialog(Adw.Window):
             curated.append(lbl)
         if curated.get_first_child() is not None:
             upstream = Adw.PreferencesGroup(
-                title="Upstream",
-                description="These picks come from the wichforks guide and update "
-                "themselves. Anything you add below is yours and stays untouched.",
+                title="Recommended",
+                description="Hand-picked games from the wichforks guide. They stay "
+                "up to date on their own, and anything you add below is always kept.",
             )
             upstream.add(curated)
             page.append(upstream)
@@ -804,13 +804,21 @@ class SettingsWindow(Adw.Window):
         self._refresh()
 
     def _build_games_page(self):
-        """Global catalog of the user's own games (title ID + name)."""
+        """Full game catalog: included entries plus the user's own additions."""
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        shipped_group = Adw.PreferencesGroup(
+            title="Included games",
+            description="Games the launcher already knows. Pick any of them when "
+            "tagging a source or a PR build - this list keeps itself up to date.",
+        )
+        self._shipped_games_group = shipped_group
+        self._shipped_game_rows = []
+        page.append(shipped_group)
         page.append(
             Adw.PreferencesGroup(
                 title="Your games",
-                description="Custom title IDs offered in every Tags tab, "
-                "alongside the shipped list. Never touched by sync.",
+                description="Games you added yourself. They show up everywhere "
+                "the included ones do, and are never changed.",
             )
         )
         self._custom_games_group = Adw.PreferencesGroup()
@@ -845,12 +853,33 @@ class SettingsWindow(Adw.Window):
         return page
 
     def _refresh_games(self):
+        from ..config import game_catalog
+
         for row in getattr(self, "_custom_game_rows", []):
             try:
                 self._custom_games_group.remove(row)
             except Exception:
                 pass
         self._custom_game_rows = []
+        for row in getattr(self, "_shipped_game_rows", []):
+            try:
+                self._shipped_games_group.remove(row)
+            except Exception:
+                pass
+        self._shipped_game_rows = []
+        custom_ids = {
+            (g.get("title_id") or "").upper()
+            for g in (self.cfg.get("custom_games", []) or [])
+            if isinstance(g, dict)
+        }
+        for title_id, name in game_catalog(self.cfg).items():
+            if title_id in custom_ids:
+                continue
+            row = Adw.ActionRow(title=name, subtitle=title_id)
+            row.add_css_class("dim-label")
+            row.set_activatable(False)
+            self._shipped_game_rows.append(row)
+            self._shipped_games_group.add(row)
         custom = self.cfg.get("custom_games", []) or []
         if not custom:
             self._games_status.set_label("No custom games yet.")
@@ -882,7 +911,7 @@ class SettingsWindow(Adw.Window):
             self._games_error.set_label("Give the game a name.")
             return
         if title_id in game_catalog(self.cfg):
-            self._games_error.set_label("That game is already in the catalog.")
+            self._games_error.set_label("That game is already in the list.")
             return
         self._games_error.set_label("")
         self.cfg.setdefault("custom_games", []).append({"title_id": title_id, "name": name})

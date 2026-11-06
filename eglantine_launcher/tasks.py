@@ -1302,7 +1302,7 @@ def project_storage(cfg, pid):
                 {
                     "kind": "source",
                     "pid": pid,
-                    "label": f"Source checkout{(' (' + head + ')') if head else ''}",
+                    "label": f"Source files{(' (' + head + ')') if head else ''}",
                     "detail": str(src),
                     "size": dir_size(src),
                     "path": str(src),

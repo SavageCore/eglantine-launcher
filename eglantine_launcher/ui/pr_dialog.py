@@ -64,7 +64,7 @@ class PREditDialog(Adw.Window):
 
         settings_group = Adw.PreferencesGroup(
             title="Emulator settings",
-            description="Shared with other builds of the same repo unless renamed.",
+            description="Shared with other builds of the same source unless renamed.",
         )
         self.config_key_entry = Adw.EntryRow(title="Settings folder")
         self.config_key_entry.set_text(self._current_config_key())
