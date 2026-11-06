@@ -1,10 +1,29 @@
-"""Make near-magenta corners transparent (rounded CSD corners over backdrop)."""
+"""Make near-magenta corners transparent (rounded CSD corners over backdrop),
+then squeeze the PNG as small as a local ImgBot would: oxipng (or optipng)
+when installed, else Pillow's own optimizer."""
 
+import shutil
+import subprocess
 import sys
 
 from PIL import Image, ImageDraw
 
 MAGENTA = (255, 0, 255)
+
+
+def optimize(path):
+    """Best local PNG squeeze available; never fails the screenshot run."""
+    if shutil.which("oxipng"):
+        cmd = ["oxipng", "-o2", "--strip", "safe", "--quiet", path]
+    elif shutil.which("optipng"):
+        cmd = ["optipng", "-o2", "-quiet", path]
+    else:
+        return False
+    try:
+        subprocess.run(cmd, timeout=120, check=True, capture_output=True)
+    except Exception:
+        return False
+    return True
 
 
 def main(paths):
@@ -21,8 +40,11 @@ def main(paths):
         # 5px so the content fills the image edge to edge.
         if w > 10 and h > 10:
             img = img.crop((5, 5, w - 5, h - 5))
-        img.save(path)
-        print(f"alpha: {path}")
+        img.save(path, optimize=True)
+        if optimize(path):
+            print(f"alpha+squeezed: {path}")
+        else:
+            print(f"alpha: {path} (install oxipng for smaller files)")
 
 
 if __name__ == "__main__":
