@@ -36,13 +36,61 @@ def test_main_window_has_content(needs_display, fake_home):
         window.close()
 
 
+def _pill_labels(window):
+    labels = []
+    child = window.tag_flow.get_first_child()
+    while child is not None:
+        labels.append(child.get_child().get_label())
+        child = child.get_next_sibling()
+    return labels
+
+
+def _pill_classes(window):
+    classes = []
+    child = window.tag_flow.get_first_child()
+    while child is not None:
+        classes.append(child.get_child().get_css_classes())
+        child = child.get_next_sibling()
+    return classes
+
+
+def test_project_pills_show_games_and_tags(needs_display, fake_home):
+    app = _make_app()
+    window = LauncherWindow(app)
+    try:
+        assert window.tag_flow.get_visible()
+        assert _pill_labels(window) == [
+            "Mario Kart World",
+            "Splatoon Raiders",
+            "Hyrule Warriors: Age of Imprisonment",
+            "Default",
+        ]
+        for classes in _pill_classes(window):
+            assert "eglantine-pill" in classes
+            assert any(c.startswith("pill-tone-") for c in classes)
+        info = window._current_info()
+        info["user_best_for"] = [{"title_id": "040074A01BF12000", "name": "Donkey Kong Bananza"}]
+        info["user_tags"] = [{"id": "fix", "label": "fix", "tooltip": "Fixes mods on NUP"}]
+        window._update_project_row_meta()
+        assert _pill_labels(window) == [
+            "Mario Kart World",
+            "Splatoon Raiders",
+            "Hyrule Warriors: Age of Imprisonment",
+            "Donkey Kong Bananza",
+            "Default",
+            "fix",
+        ]
+    finally:
+        window.close()
+
+
 def test_main_window_restores_saved_size(needs_display, fake_home, monkeypatch):
     from eglantine_launcher.config import load
 
     app = _make_app()
     window = LauncherWindow(app)
     try:
-        assert window.get_default_size() == (640, 600)
+        assert window.get_default_size() == (640, 460)
         monkeypatch.setattr(window, "get_width", lambda: 500)
         monkeypatch.setattr(window, "get_height", lambda: 650)
         window._save_window_size()
@@ -60,7 +108,12 @@ def test_stop_button_hidden_initially_and_destructive(needs_display, fake_home):
         assert "destructive-action" in window.stop_btn.get_css_classes()
         assert not window.has_action("shortcut")
         assert window.shortcut_btn.get_label() == "Shortcuts..."
-        assert window.has_action("folder")
+        # PR builds and the data folder moved into Settings; the menu
+        # keeps only Settings and About.
+        assert not window.has_action("folder")
+        assert not window.has_action("pr-builds")
+        assert window.has_action("settings")
+        assert window.has_action("about")
     finally:
         window.close()
 
@@ -143,8 +196,10 @@ def test_settings_window_builds(needs_display, fake_home):
     try:
         assert window.sources_group is not None
         assert window.source_row is not None
-        # default config ships two sources; both rows must render
-        assert len(window._source_rows) == 2
+        # default config ships the wichforks defaults; all rows must render
+        from eglantine_launcher.config import DEFAULT_PROJECTS
+
+        assert len(window._source_rows) == len(DEFAULT_PROJECTS)
     finally:
         window.close()
 
@@ -160,6 +215,129 @@ def test_settings_window_builds_with_token(needs_display, fake_home):
     window = SettingsWindow(None)
     try:
         assert window.api_group is not None
+    finally:
+        window.close()
+
+
+def test_settings_sidebar_pages(needs_display, fake_home):
+    from eglantine_launcher.ui.settings_window import SettingsWindow
+
+    window = SettingsWindow(None)
+    try:
+        assert [key for key, _label in window._SIDEBAR_PAGES] == [
+            "general",
+            "github",
+            "backups",
+            "sources",
+            "games",
+            "prs",
+        ]
+        assert window._pages.get_visible_child_name() == "general"
+        window.show_page("sources")
+        assert window._pages.get_visible_child_name() == "sources"
+        # sources page holds the build toggle and the source list
+        assert window.source_row is not None
+        assert len(window._source_rows) > 0
+    finally:
+        window.close()
+
+
+def test_settings_prs_page_lists_builds(needs_display, fake_home):
+    from eglantine_launcher.config import load, save
+    from eglantine_launcher.ui.settings_window import SettingsWindow
+
+    cfg = load()
+    cfg["projects"].append(
+        {
+            "id": "pr-x-1",
+            "name": "PR X",
+            "source_url": "https://github.com/o/r.git",
+            "branch": "pr-1",
+            "is_pr": True,
+            "pr_url": "https://github.com/o/r/pull/1",
+            "pr_number": 1,
+            "pr_state": "open",
+            "pr_head_sha": "abc123",
+        }
+    )
+    save(cfg)
+    window = SettingsWindow(None)
+    try:
+        window.show_page("prs")
+        assert window._pages.get_visible_child_name() == "prs"
+        assert len(window._pr_panel._rows) == 1
+    finally:
+        window.close()
+
+
+def test_settings_save_after_panel_change_keeps_pr(needs_display, fake_home):
+    """Regression: a Settings save after a panel save must not drop PRs."""
+    from eglantine_launcher.config import load, save
+    from eglantine_launcher.ui.settings_window import SettingsWindow
+
+    cfg = load()
+    pr = _pr_cfg()
+    cfg["projects"].append(pr)
+    save(cfg)
+    window = SettingsWindow(None)
+    try:
+        # stale in-memory list, as if the panel saved after Settings opened
+        window.cfg["projects"] = [p for p in window.cfg["projects"] if not p.get("is_pr")]
+        window._on_panel_changed()
+        assert any(p.get("id") == pr["id"] for p in window.cfg["projects"])
+        # a later Settings save keeps the PR entry on disk
+        window._custom_game_id_entry.set_text("0400999900000000")
+        window._custom_game_name_entry.set_text("Mine")
+        window._on_add_custom_game()
+        assert any(p.get("id") == pr["id"] for p in load()["projects"])
+    finally:
+        window.close()
+
+
+def test_settings_data_folder_opens_install_dir(needs_display, fake_home, monkeypatch):
+    from eglantine_launcher.config import load, save
+    from eglantine_launcher.ui.settings_window import SettingsWindow
+
+    cfg = load()
+    cfg["install_dir"] = str(fake_home / "install")
+    save(cfg)
+    window = SettingsWindow(None)
+    try:
+        window.show_page("general")
+        called = []
+        monkeypatch.setattr("subprocess.Popen", lambda *a, **k: called.append(a) or None)
+        window._on_open_data_folder()
+        assert (fake_home / "install").is_dir()
+        assert called and "xdg-open" in called[0][0]
+    finally:
+        window.close()
+
+
+def test_settings_games_page_add_remove(needs_display, fake_home):
+    from eglantine_launcher.config import load
+    from eglantine_launcher.ui.settings_window import SettingsWindow
+
+    window = SettingsWindow(None)
+    try:
+        window.show_page("games")
+        assert window._pages.get_visible_child_name() == "games"
+        assert "No custom games yet." in window._games_status.get_label()
+        window._custom_game_id_entry.set_text("0400999900000000")
+        window._custom_game_name_entry.set_text("Mine")
+        window._on_add_custom_game()
+        assert load()["custom_games"] == [{"title_id": "0400999900000000", "name": "Mine"}]
+        assert len(window._custom_game_rows) == 1
+        # duplicates and bad IDs are rejected with an error, not saved
+        window._custom_game_id_entry.set_text("0400999900000000")
+        window._custom_game_name_entry.set_text("Mine")
+        window._on_add_custom_game()
+        assert "already" in window._games_error.get_label()
+        window._custom_game_id_entry.set_text("xyz")
+        window._on_add_custom_game()
+        assert "16-digit" in window._games_error.get_label()
+        assert len(load()["custom_games"]) == 1
+        window._on_delete_custom_game(None, "0400999900000000")
+        assert load().get("custom_games") == []
     finally:
         window.close()
 
@@ -520,6 +698,98 @@ def test_source_row_click_opens_edit(needs_display, fake_home, monkeypatch):
         window._on_row_activated(row)
         assert opened == [row.project]
     finally:
+        window.close()
+
+
+def test_source_row_has_working_edit_button(needs_display, fake_home, monkeypatch):
+    from gi.repository import Gtk
+
+    from eglantine_launcher.ui.settings_window import SettingsWindow
+
+    window = SettingsWindow(None)
+    try:
+        opened = []
+        monkeypatch.setattr(window, "_edit_project", lambda proj: opened.append(proj))
+        row = window._source_rows[0]
+
+        def buttons(widget):
+            found = []
+            child = widget.get_first_child()
+            while child is not None:
+                if isinstance(child, Gtk.Button):
+                    found.append(child)
+                found.extend(buttons(child))
+                child = child.get_next_sibling()
+            return found
+
+        edit_btns = [b for b in buttons(row) if (b.get_tooltip_text() or "").startswith("Edit ")]
+        assert len(edit_btns) == 1
+        edit_btns[0].emit("clicked")
+        assert opened == [row.project]
+    finally:
+        window.close()
+
+
+def test_pr_row_click_opens_editor(needs_display, fake_home, monkeypatch):
+    import eglantine_launcher.ui.pr_dialog as prmod
+    from eglantine_launcher.config import load, save
+    from eglantine_launcher.ui.pr_dialog import PRBuildsPanel
+
+    cfg = load()
+    cfg["projects"].append(_pr_cfg())
+    save(cfg)
+    panel = PRBuildsPanel()
+    assert len(panel._rows) == 1
+    row = panel._rows[0]
+    assert row.get_activatable() is True
+    opened = []
+
+    class FakeDialog:
+        def __init__(self, *a, **k):
+            opened.append((a, k))
+
+        def present(self):
+            pass
+
+    monkeypatch.setattr(prmod, "PREditDialog", FakeDialog)
+    row.emit("activated")
+    assert len(opened) == 1
+
+
+def test_source_editor_opens_before_branch_lookup(needs_display, fake_home, monkeypatch):
+    """The editor must not wait on the network to open (cf. PR dialog)."""
+    import threading
+
+    from gi.repository import Gtk
+
+    import eglantine_launcher.ui.settings_window as swmod
+    from eglantine_launcher.config import load
+
+    proj = next(p for p in load()["projects"] if p["id"] == "eglantine")
+    window = swmod.SettingsWindow(None)
+    try:
+        gate = threading.Event()
+
+        def slow(*a, **k):
+            gate.set()
+            threading.Event().wait(timeout=30)
+            return ["nx2", "main"]
+
+        monkeypatch.setattr(swmod, "list_branches", slow)
+        before = {id(w) for w in Gtk.Window.list_toplevels() if isinstance(w, swmod.ProjectEditDialog)}
+        window._edit_project(proj)
+        assert gate.wait(timeout=10), "branch lookup never started"
+        dialogs = [
+            w
+            for w in Gtk.Window.list_toplevels()
+            if isinstance(w, swmod.ProjectEditDialog) and id(w) not in before
+        ]
+        # dialog is already open even though the lookup above is still blocked
+        assert len(dialogs) == 1
+        for d in dialogs:
+            d.close()
+    finally:
+        gate.set()
         window.close()
 
 
@@ -926,10 +1196,105 @@ def _pr_cfg():
     }
 
 
-def test_pr_menu_action_exists(needs_display, fake_home):
+def test_pr_builds_opens_settings_prs_page(needs_display, fake_home):
     window = LauncherWindow(_make_app())
     try:
-        assert window.has_action("pr-builds")
+        settings = window.on_pr_builds()
+        assert settings._pages.get_visible_child_name() == "prs"
+        settings.close()
+    finally:
+        window.close()
+
+
+def test_pr_added_in_settings_appears_in_main_list(needs_display, fake_home, monkeypatch):
+    """End to end: panel Add -> disk -> settings refresh -> main dropdown."""
+    import eglantine_launcher.ui.pr_dialog as prmod
+    from eglantine_launcher.config import load
+
+    window = LauncherWindow(_make_app())
+    try:
+        settings = window.on_settings()
+        try:
+            assert "pr-fixture-o-r-123456" not in window._project_ids
+            pr = _pr_cfg()
+
+            def fake_edit_dialog(parent, project, on_save, **kwargs):
+                from types import SimpleNamespace
+
+                on_save(dict(pr), pr["id"])
+                return SimpleNamespace(present=lambda: None)
+
+            monkeypatch.setattr(prmod, "PREditDialog", fake_edit_dialog)
+            settings._pr_panel._add(None)
+            assert "pr-fixture-o-r-123456" in window._project_ids
+            assert any(p.get("id") == pr["id"] for p in load()["projects"])
+            # a later Settings save keeps it on disk too
+            settings._custom_game_id_entry.set_text("0400999900000000")
+            settings._custom_game_name_entry.set_text("Mine")
+            settings._on_add_custom_game()
+            assert any(p.get("id") == pr["id"] for p in load()["projects"])
+        finally:
+            settings.close()
+    finally:
+        window.close()
+
+
+def test_project_dropdown_lists_favourites_first_with_divider(needs_display, fake_home):
+    from eglantine_launcher.ui import window as winmod
+
+    window = LauncherWindow(_make_app())
+    try:
+        from eglantine_launcher.config import load, save
+
+        cfg = load()
+        cfg["projects"].append(_pr_cfg())
+        cfg["projects"][1]["favorite"] = True
+        save(cfg)
+        window.reload_projects()
+        # favourite first, plain PR in normal position, divider between groups
+        assert window._project_ids[0] == "pokedinner"
+        assert window._project_ids[1] is None
+        assert window.project_row.get_model().get_string(0) == "PokeDinner (Pokopia)"
+        assert window.project_row.get_model().get_string(1) == winmod.PROJECT_SEPARATOR
+        assert window._project_ids.index("pr-fixture-o-r-123456") > 1
+        eglantine_idx = window._project_ids.index("eglantine")
+        window.project_row.set_selected(1)
+        assert window.project_row.get_selected() == eglantine_idx
+        assert window._current_info().get("id") == "eglantine"
+    finally:
+        window.close()
+
+
+def test_project_dropdown_is_searchable(needs_display, fake_home):
+    window = LauncherWindow(_make_app())
+    try:
+        if hasattr(window.project_row, "get_enable_search"):
+            assert window.project_row.get_enable_search()
+    finally:
+        window.close()
+
+
+def test_project_dropdown_has_no_divider_without_prs(needs_display, fake_home):
+    window = LauncherWindow(_make_app())
+    try:
+        assert None not in window._project_ids
+        assert window._project_ids[0] == "eglantine"
+    finally:
+        window.close()
+
+
+def test_poll_external_changes_reloads_projects(needs_display, fake_home):
+    from eglantine_launcher.config import load, save
+
+    window = LauncherWindow(_make_app())
+    try:
+        assert "pr-fixture-o-r-123456" not in window._project_ids
+        cfg = load()
+        cfg["projects"].append(_pr_cfg())
+        save(cfg)
+        assert window._poll_external_changes() is True
+        assert "pr-fixture-o-r-123456" in window._project_ids
+        assert window._poll_external_changes() is True
     finally:
         window.close()
 
@@ -1047,7 +1412,7 @@ def test_already_built_uses_per_project_value(needs_display, fake_home, tmp_path
         window.close()
 
 
-def test_launch_pr_selects_and_launches(needs_display, fake_home, monkeypatch):
+def test_selecting_pr_in_dropdown_sets_source_mode(needs_display, fake_home):
     from eglantine_launcher.config import load, save
 
     cfg = load()
@@ -1056,14 +1421,41 @@ def test_launch_pr_selects_and_launches(needs_display, fake_home, monkeypatch):
     save(cfg)
     window = LauncherWindow(_make_app())
     try:
-        launched = []
-        monkeypatch.setattr(window, "on_launch", lambda *a: launched.append(True))
-        window._launch_pr(pr["id"])
-        assert launched == [True]
+        window.project_row.set_selected(window._project_ids.index(pr["id"]))
         assert window.cfg["project"] == pr["id"]
+        assert window.cfg["mode"] == "source"
         assert load()["project"] == pr["id"]
+        assert window._current_info().get("id") == pr["id"]
     finally:
         window.close()
+
+
+def test_pr_row_has_globe_link_not_launch(needs_display, fake_home):
+    from gi.repository import Gtk
+
+    from eglantine_launcher.config import load, save
+    from eglantine_launcher.ui.pr_dialog import PRBuildsPanel
+
+    cfg = load()
+    cfg["projects"].append(_pr_cfg())
+    save(cfg)
+    panel = PRBuildsPanel()
+    row = panel._rows[0]
+
+    def labels(widget):
+        found = []
+        child = widget.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.Button):
+                found.append(child)
+            found.extend(labels(child))
+            child = child.get_next_sibling()
+        return found
+
+    btns = labels(row)
+    assert not [b for b in btns if b.get_label() == "Launch"]
+    links = [b for b in btns if (b.get_tooltip_text() or "").startswith("Open https://")]
+    assert len(links) == 1
 
 
 def test_settings_hides_pr_builds(needs_display, fake_home):
@@ -1075,7 +1467,9 @@ def test_settings_hides_pr_builds(needs_display, fake_home):
     save(cfg)
     window = SettingsWindow(None)
     try:
-        assert len(window._source_rows) == 2
+        from eglantine_launcher.config import DEFAULT_PROJECTS
+
+        assert len(window._source_rows) == len(DEFAULT_PROJECTS)
         assert all(not getattr(r, "project", {}).get("is_pr") for r in window._source_rows)
     finally:
         window.close()
@@ -1162,8 +1556,8 @@ def test_pr_delete_removes_entry_and_data(needs_display, fake_home, tmp_path, mo
     dialog = prmod.PRBuildsDialog(None)
     try:
         changed = []
-        dialog.on_changed = lambda: changed.append(True)
-        dialog._on_delete_clicked(None, dict(pr, id=pr["id"], name=pr["name"]))
+        dialog.panel.on_changed = lambda: changed.append(True)
+        dialog.panel._on_delete_clicked(None, dict(pr, id=pr["id"], name=pr["name"]))
         dlg = next(w for w in Gtk.Window.list_toplevels() if isinstance(w, Adw.MessageDialog))
         try:
             dlg.response("delete")
@@ -1174,3 +1568,46 @@ def test_pr_delete_removes_entry_and_data(needs_display, fake_home, tmp_path, mo
         assert changed == [True]
     finally:
         dialog.close()
+
+
+def test_favourite_sorts_with_prs_above_divider(needs_display, fake_home):
+    from eglantine_launcher.config import load, save
+
+    cfg = load()
+    cfg["projects"][1]["favorite"] = True
+    save(cfg)
+    window = LauncherWindow(_make_app())
+    try:
+        from eglantine_launcher.ui import window as winmod
+
+        assert window._project_ids[0] == "pokedinner"
+        assert window._project_ids[1] is None
+        assert window.project_row.get_model().get_string(0) == "PokeDinner (Pokopia)"
+        assert window.project_row.get_model().get_string(1) == winmod.PROJECT_SEPARATOR
+        # star follows the selection: eglantine selected, not a favourite
+        assert window._star_label.get_label() == "★"
+        assert "fav-active" not in window._star_label.get_css_classes()
+        window.project_row.set_selected(0)
+        assert "fav-active" in window._star_label.get_css_classes()
+        assert window._current_info().get("id") == "pokedinner"
+    finally:
+        window.close()
+
+
+def test_star_toggle_favourites_and_persists(needs_display, fake_home):
+    from eglantine_launcher.config import load
+
+    window = LauncherWindow(_make_app())
+    try:
+        assert window._star_label.get_label() == "★"
+        assert "fav-active" not in window._star_label.get_css_classes()
+        window._on_star_clicked()
+        assert window.cfg["project"] is not None
+        info = window._current_info()
+        assert info.get("favorite") is True
+        assert "fav-active" in window._star_label.get_css_classes()
+        assert load()["projects"][0].get("favorite") is True
+        window._on_star_clicked()
+        assert window._current_info().get("favorite", False) is False
+    finally:
+        window.close()

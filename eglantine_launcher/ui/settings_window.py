@@ -1,3 +1,4 @@
+import subprocess
 import threading
 import uuid
 from pathlib import Path
@@ -32,6 +33,9 @@ from ..tasks import (
     source_key,
 )
 from ..tray import ASK_LABEL, CLOSE_CHOICES, LAUNCH_CHOICES
+from .pr_dialog import PRBuildsPanel
+from .sidebar import SidebarLayout, page_box
+from .taglist import TagListEditor
 
 
 def _slug(name):
@@ -100,7 +104,7 @@ class ProjectEditDialog(Adw.Window):
 
     def __init__(self, parent, project=None, on_save=None, prefill=None, cfg=None, on_storage_changed=None):
         super().__init__(transient_for=parent, modal=True, title="Edit source" if project else "New source")
-        self.set_default_size(480, -1)
+        self.set_default_size(680, 560)
         self.on_save = on_save
         self.on_storage_changed = on_storage_changed
         self.project = dict(project) if project else {}
@@ -194,8 +198,12 @@ class ProjectEditDialog(Adw.Window):
         settings_page.append(settings_group)
 
         if self._pid:
-            stack = Gtk.Stack()
-            stack.add_titled(self._scrolled(settings_page), "settings", "Settings")
+            self._layout = SidebarLayout([("settings", "Settings"), ("storage", "Storage"), ("tags", "Tags")])
+            self._layout.set_margin_top(12)
+            self._layout.set_margin_bottom(12)
+            self._layout.set_margin_start(12)
+            self._layout.set_margin_end(12)
+            self._layout.add_page("settings", settings_page)
             self._storage_group = Adw.PreferencesGroup(
                 title="On-disk data",
                 description="Delete downloads or checkouts you no longer need. "
@@ -207,17 +215,15 @@ class ProjectEditDialog(Adw.Window):
             self._storage_status.add_css_class("dim-label")
             self._storage_status.set_wrap(True)
             storage_page.append(self._storage_status)
-            stack.add_titled(self._scrolled(storage_page), "storage", "Storage")
-            switcher = Gtk.StackSwitcher()
-            switcher.set_stack(stack)
-            switcher.set_halign(Gtk.Align.CENTER)
-            box.append(switcher)
-            box.append(stack)
-            self._stack = stack
+            self._layout.add_page("storage", storage_page)
+            self._layout.add_page("tags", self._build_tags_page())
+            box.append(self._layout)
+            self._stack = self._layout.stack
             self._refresh_storage()
         else:
             box.append(self._scrolled(settings_page))
             self._stack = None
+            self._layout = None
 
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         btn_box.set_halign(Gtk.Align.END)
@@ -231,6 +237,11 @@ class ProjectEditDialog(Adw.Window):
         box.append(btn_box)
 
         self.set_content(box)
+
+    def show_page(self, name):
+        """Select a sidebar page by name."""
+        if getattr(self, "_layout", None) is not None:
+            self._layout.show_page(name)
 
     def _refresh_storage(self):
         self._storage_status.set_label("Loading…")
@@ -382,6 +393,166 @@ class ProjectEditDialog(Adw.Window):
         scrolled.set_child(child)
         return scrolled
 
+    def _build_tags_page(self):
+        """Tags tab: read-only upstream curation plus the user's own entries."""
+        from ..config import game_catalog
+
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        curated = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        for item in self.project.get("best_for") or []:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name") or item.get("title_id", "")
+            note = (item.get("note") or "").strip()
+            lbl = Gtk.Label(label=f"{name} - {note}" if note else name)
+            lbl.set_xalign(0)
+            lbl.set_wrap(True)
+            lbl.add_css_class("dim-label")
+            curated.append(lbl)
+        for tag in self.project.get("tags") or []:
+            if not isinstance(tag, dict):
+                continue
+            label = tag.get("label") or tag.get("id", "")
+            tip = (tag.get("tooltip") or "").strip()
+            lbl = Gtk.Label(label=f"{label} - {tip}" if tip else label)
+            lbl.set_xalign(0)
+            lbl.set_wrap(True)
+            lbl.add_css_class("dim-label")
+            curated.append(lbl)
+        if curated.get_first_child() is not None:
+            upstream = Adw.PreferencesGroup(
+                title="Upstream",
+                description="These picks come from the wichforks guide and update "
+                "themselves. Anything you add below is yours and stays untouched.",
+            )
+            upstream.add(curated)
+            page.append(upstream)
+            link = Gtk.LinkButton.new_with_label(
+                "https://github.com/riyadhHDA/wichforks", "wichforks fork guide on GitHub"
+            )
+            link.set_halign(Gtk.Align.START)
+            page.append(link)
+
+        curated_ids = {
+            (b.get("title_id") if isinstance(b, dict) else None) for b in (self.project.get("best_for") or [])
+        }
+        user_games = {
+            (b.get("title_id") if isinstance(b, dict) else None): b
+            for b in (self.project.get("user_best_for") or [])
+            if isinstance(b, dict)
+        }
+        games_group = Adw.PreferencesGroup(
+            title="Your games",
+            description="Extra games this source is good for.",
+        )
+        self._user_game_checks = {}
+        self._user_games_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        games_group.add(self._user_games_box)
+        for title_id, name in game_catalog(self._cfg).items():
+            if title_id in curated_ids:
+                continue
+            self._append_user_game_row(title_id, name, title_id in user_games, user_games.get(title_id))
+        page.append(games_group)
+
+        add_game_header = Gtk.Label(label="Add a game")
+        add_game_header.add_css_class("heading")
+        add_game_header.set_xalign(0)
+        page.append(add_game_header)
+        self._user_game_error = Gtk.Label(label="")
+        self._user_game_error.add_css_class("error")
+        self._user_game_error.set_wrap(True)
+        self._user_game_error.set_xalign(0)
+        page.append(self._user_game_error)
+        add_game_row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self._new_game_id_entry = Gtk.Entry()
+        self._new_game_id_entry.set_placeholder_text("Title ID, e.g. 0400C3F00006E000")
+        add_game_row.append(self._new_game_id_entry)
+        self._new_game_name_entry = Gtk.Entry()
+        self._new_game_name_entry.set_placeholder_text("Name, e.g. Mario Kart World")
+        self._new_game_name_entry.set_hexpand(True)
+        add_game_row.append(self._new_game_name_entry)
+        add_game_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        add_game_box.set_halign(Gtk.Align.END)
+        add_game_btn = Gtk.Button(label="Add game")
+        add_game_btn.connect("clicked", self._on_add_user_game)
+        add_game_box.append(add_game_btn)
+        add_game_row.append(add_game_box)
+        page.append(add_game_row)
+
+        tags_lbl = Gtk.Label(label="Your tags")
+        tags_lbl.add_css_class("heading")
+        tags_lbl.set_xalign(0)
+        page.append(tags_lbl)
+        tags_group = Adw.PreferencesGroup(
+            description="Freeform labels with hover notes.",
+        )
+        self._user_tags_editor = TagListEditor()
+        for tag in self.project.get("user_tags") or []:
+            if isinstance(tag, dict):
+                self._user_tags_editor.add_tag(tag.get("label", ""), tag.get("tooltip", ""))
+        tags_group.add(self._user_tags_editor)
+        page.append(tags_group)
+        add_tag_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        add_tag_box.set_halign(Gtk.Align.END)
+        add_tag_btn = Gtk.Button(label="Add tag")
+        add_tag_btn.connect("clicked", lambda *_: self._user_tags_editor.add_tag())
+        add_tag_box.append(add_tag_btn)
+        page.append(add_tag_box)
+        return page
+
+    def _append_user_game_row(self, title_id, name, active=False, existing=None):
+        row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        check = Gtk.CheckButton(label=name)
+        check.set_active(active)
+        row.append(check)
+        note_entry = Gtk.Entry()
+        note_entry.set_placeholder_text("Why (optional)")
+        note_entry.set_hexpand(True)
+        note_entry.set_margin_start(28)
+        note_entry.set_text((existing.get("note") or "") if isinstance(existing, dict) else "")
+        row.append(note_entry)
+        self._user_game_checks[title_id] = (check, note_entry, name)
+        self._user_games_box.append(row)
+        return row
+
+    def _on_add_user_game(self, *_args):
+        from ..config import normalize_title_id
+
+        title_id = normalize_title_id(self._new_game_id_entry.get_text())
+        name = self._new_game_name_entry.get_text().strip()
+        if title_id is None:
+            self._user_game_error.set_label("That is not a 16-digit hex title ID.")
+            return
+        if not name:
+            self._user_game_error.set_label("Give the game a name.")
+            return
+        if title_id in self._user_game_checks:
+            self._user_game_error.set_label("That game is already listed above.")
+            return
+        self._user_game_error.set_label("")
+        custom = self._cfg.setdefault("custom_games", [])
+        if not any(isinstance(g, dict) and (g.get("title_id") or "").upper() == title_id for g in custom):
+            custom.append({"title_id": title_id, "name": name})
+            save_config(self._cfg)
+        self._append_user_game_row(title_id, name, active=True)
+        self._new_game_id_entry.set_text("")
+        self._new_game_name_entry.set_text("")
+
+    def _collect_user_tags(self):
+        """User overlay state from the Tags tab (no-op when the tab is absent)."""
+        games = []
+        for title_id, (check, note_entry, name) in getattr(self, "_user_game_checks", {}).items():
+            if not check.get_active():
+                continue
+            note = note_entry.get_text().strip()
+            games.append(
+                {"title_id": title_id, "name": name, "note": note}
+                if note
+                else {"title_id": title_id, "name": name}
+            )
+        editor = getattr(self, "_user_tags_editor", None)
+        return games, editor.collect() if editor is not None else []
+
     def _current_config_key(self):
         """Folder name this source uses now: its override, else the repo key."""
         return (self.project.get("config_key") or "").strip() or source_key(
@@ -409,6 +580,47 @@ class ProjectEditDialog(Adw.Window):
             "exclude_keywords": self.exclude_entry.get_text().strip(),
             "icon_url": self.icon_entry.get_text().strip() or None,
         }
+        # Preserve curated/external fields the editor has no widgets for
+        # (best_for/tags/confidence/origin/remote/is_pr/...). Otherwise
+        # opening and saving a wichforks default would wipe its metadata.
+        for key in (
+            "origin",
+            "remote",
+            "confidence",
+            "best_for",
+            "tags",
+            "user_best_for",
+            "user_tags",
+            "is_pr",
+            "pr_url",
+            "pr_number",
+            "pr_owner",
+            "pr_repo",
+            "pr_host",
+            "pr_title",
+            "pr_state",
+            "pr_head_sha",
+            "last_built_commit",
+        ):
+            if key in self.project and key not in project:
+                project[key] = self.project[key]
+        # The Tags tab edits the user overlay; curated best_for/tags stay
+        # as sync left them.
+        if self._stack is not None:
+            user_games, user_tags = self._collect_user_tags()
+            project["user_best_for"] = user_games
+            project["user_tags"] = user_tags
+        if not project.get("origin") and old_id:
+            # A shipped id edited by hand stays managed; a truly custom
+            # source is marked manual so sync never touches it.
+            try:
+                from ..config import _default_by_id
+            except Exception:
+                _default_by_id = None
+            if _default_by_id is not None and old_id in _default_by_id():
+                project["origin"] = _default_by_id()[old_id].get("origin", "wichforks")
+            else:
+                project["origin"] = "manual"
         config_key = self.config_key_entry.get_text().strip()
         project["config_key"] = source_key({"config_key": config_key, "source_url": source_url})
         # Editing a source must not make a deleted config reappear.
@@ -422,18 +634,22 @@ class ProjectEditDialog(Adw.Window):
 
 
 class SettingsWindow(Adw.Window):
+    _SIDEBAR_PAGES = (
+        ("general", "General"),
+        ("github", "GitHub"),
+        ("backups", "Backups"),
+        ("sources", "Sources"),
+        ("games", "Games"),
+        ("prs", "PR Builds"),
+    )
+
     def __init__(self, parent, on_changed=None):
         super().__init__(transient_for=parent, modal=True, title="Settings")
-        self.set_default_size(620, 780)
+        self.set_default_size(780, 620)
         self.on_changed = on_changed
         self.cfg = load_config()
 
         toolbar = Adw.HeaderBar()
-        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        content_box.set_margin_top(12)
-        content_box.set_margin_bottom(12)
-        content_box.set_margin_start(12)
-        content_box.set_margin_end(12)
 
         self._api_base_desc = (
             "Optional. Without a token, GitHub allows ~60 requests/hour "
@@ -455,9 +671,7 @@ class SettingsWindow(Adw.Window):
         self._token_status_label.set_wrap(True)
         self._token_status_label.set_xalign(0)
         self._token_status_label.set_visible(False)
-        content_box.append(self._token_status_label)
         self._token_status_seq = 0
-        content_box.append(self.api_group)
 
         token_link = Gtk.LinkButton.new_with_label(
             "https://github.com/settings/personal-access-tokens/new"
@@ -467,7 +681,6 @@ class SettingsWindow(Adw.Window):
             "Create a token (no permissions needed - public data only)",
         )
         token_link.set_halign(Gtk.Align.START)
-        content_box.append(token_link)
 
         build_group = Adw.PreferencesGroup(title="Source builds")
         self.source_row = Adw.SwitchRow(title="Allow building from source")
@@ -475,7 +688,6 @@ class SettingsWindow(Adw.Window):
         self.source_row.set_active(self.cfg.get("source_enabled", True))
         self.source_row.connect("notify::active", self._on_source_toggle)
         build_group.add(self.source_row)
-        content_box.append(build_group)
 
         window_group = Adw.PreferencesGroup(title="Window")
         self._launch_values = [None, *[v for v, _label in LAUNCH_CHOICES]]
@@ -494,7 +706,6 @@ class SettingsWindow(Adw.Window):
         self.close_behavior_row.set_selected(self._close_index(self.cfg.get("close_behavior")))
         self.close_behavior_row.connect("notify::selected", self._on_close_behavior_changed)
         window_group.add(self.close_behavior_row)
-        content_box.append(window_group)
 
         backup_group = Adw.PreferencesGroup(
             title="Save backups",
@@ -502,12 +713,10 @@ class SettingsWindow(Adw.Window):
             f"(newest {SAVE_BACKUP_KEEP} kept). Restoring overwrites current saves.",
         )
         self.backup_group = backup_group
-        content_box.append(backup_group)
         self.backup_status = Gtk.Label(label="Loading…")
         self.backup_status.add_css_class("dim-label")
         self.backup_status.set_wrap(True)
         self.backup_status.set_xalign(0)
-        content_box.append(self.backup_status)
         self._backup_rows = []
         self._refresh_backups()
 
@@ -522,20 +731,38 @@ class SettingsWindow(Adw.Window):
         add_btn.add_css_class("suggested-action")
         add_btn.connect("clicked", self._add)
         src_header.append(add_btn)
-        content_box.append(src_header)
 
         self.sources_group = Adw.PreferencesGroup()
         self._source_rows = []
-        content_box.append(self.sources_group)
 
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_child(content_box)
-        scrolled.set_vexpand(True)
-        scrolled.set_hexpand(True)
-        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self._layout = SidebarLayout(self._SIDEBAR_PAGES)
+        self._layout.set_margin_top(12)
+        self._layout.set_margin_bottom(12)
+        self._layout.set_margin_start(12)
+        self._layout.set_margin_end(12)
+        data_group = Adw.PreferencesGroup(
+            title="Data folder",
+            description="Downloads, source checkouts and saves live here.",
+        )
+        data_row = Adw.ActionRow(title="Open data folder", subtitle=self.cfg.get("install_dir", ""))
+        open_btn = Gtk.Button(label="Open")
+        open_btn.set_valign(Gtk.Align.CENTER)
+        open_btn.connect("clicked", self._on_open_data_folder)
+        data_row.add_suffix(open_btn)
+        data_group.add(data_row)
+        self._layout.add_page("general", page_box([window_group, data_group]))
+        self._layout.add_page("github", page_box([self._token_status_label, self.api_group, token_link]))
+        self._layout.add_page("backups", page_box([self.backup_group, self.backup_status]))
+        self._layout.add_page("sources", page_box([build_group, src_header, self.sources_group]))
+        self._layout.add_page("games", self._build_games_page())
+        self._pr_panel = PRBuildsPanel(on_changed=self._on_panel_changed)
+        self._layout.add_page("prs", self._pr_panel)
+        self._pages = self._layout.stack
+        self._sidebar = self._layout.sidebar
+        self._sidebar_rows = self._layout.rows
 
         list_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        list_page.append(scrolled)
+        list_page.append(self._layout)
 
         close_btn = Gtk.Button(label="Close")
         close_btn.connect("clicked", lambda *_: self.close())
@@ -544,13 +771,6 @@ class SettingsWindow(Adw.Window):
         close_btn.set_margin_start(12)
         close_btn.set_margin_end(12)
         list_page.append(close_btn)
-        # don't leave the token field focused on open - unless the saved
-        # token was flagged rejected, in which case focus it so Enter
-        # re-verifies via the row's apply button instead of closing.
-        if self.cfg.get("github_token_rejected") and (self.cfg.get("github_token") or "").strip():
-            self.connect("map", lambda *_: self.token_entry.grab_focus())
-        else:
-            self.connect("map", lambda *_: close_btn.grab_focus())
 
         self.stack = Gtk.Stack()
         self.stack.add_named(list_page, "list")
@@ -558,6 +778,7 @@ class SettingsWindow(Adw.Window):
         self.stack.add_named(self.add_page, "add")
 
         if self.cfg.get("github_token_rejected"):
+            self.show_page("github")
             # The stamp may be stale (e.g. a transient GitHub 401), so
             # re-check the saved token live instead of asserting it is
             # still bad. Probes carry no "projects" key, so a 401 here
@@ -567,6 +788,13 @@ class SettingsWindow(Adw.Window):
                 "error",
             )
             self._auto_reverify_token()
+            # don't leave the token field focused on open - unless the saved
+            # token was flagged rejected, in which case focus it so Enter
+            # re-verifies via the row's apply button instead of closing.
+            self.connect("map", lambda *_: self.token_entry.grab_focus())
+        else:
+            self.show_page("general")
+            self.connect("map", lambda *_: close_btn.grab_focus())
 
         toolbar_view = Adw.ToolbarView()
         toolbar_view.add_top_bar(toolbar)
@@ -574,6 +802,126 @@ class SettingsWindow(Adw.Window):
         self.set_content(toolbar_view)
 
         self._refresh()
+
+    def _build_games_page(self):
+        """Global catalog of the user's own games (title ID + name)."""
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        page.append(
+            Adw.PreferencesGroup(
+                title="Your games",
+                description="Custom title IDs offered in every Tags tab, "
+                "alongside the shipped list. Never touched by sync.",
+            )
+        )
+        self._custom_games_group = Adw.PreferencesGroup()
+        self._custom_game_rows = []
+        page.append(self._custom_games_group)
+        self._games_status = Gtk.Label(label="")
+        self._games_status.add_css_class("dim-label")
+        self._games_status.set_wrap(True)
+        self._games_status.set_xalign(0)
+        page.append(self._games_status)
+        add_row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self._custom_game_id_entry = Gtk.Entry()
+        self._custom_game_id_entry.set_placeholder_text("Title ID, e.g. 0400C3F00006E000")
+        add_row.append(self._custom_game_id_entry)
+        self._custom_game_name_entry = Gtk.Entry()
+        self._custom_game_name_entry.set_placeholder_text("Name, e.g. Mario Kart World")
+        self._custom_game_name_entry.set_hexpand(True)
+        add_row.append(self._custom_game_name_entry)
+        add_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        add_box.set_halign(Gtk.Align.END)
+        add_game_btn = Gtk.Button(label="Add game")
+        add_game_btn.connect("clicked", self._on_add_custom_game)
+        add_box.append(add_game_btn)
+        add_row.append(add_box)
+        self._games_error = Gtk.Label(label="")
+        self._games_error.add_css_class("error")
+        self._games_error.set_wrap(True)
+        self._games_error.set_xalign(0)
+        add_row.append(self._games_error)
+        page.append(add_row)
+        self._refresh_games()
+        return page
+
+    def _refresh_games(self):
+        for row in getattr(self, "_custom_game_rows", []):
+            try:
+                self._custom_games_group.remove(row)
+            except Exception:
+                pass
+        self._custom_game_rows = []
+        custom = self.cfg.get("custom_games", []) or []
+        if not custom:
+            self._games_status.set_label("No custom games yet.")
+        else:
+            self._games_status.set_label(f"{len(custom)} custom game{'s' if len(custom) != 1 else ''}.")
+        for game in custom:
+            if not isinstance(game, dict):
+                continue
+            row = Adw.ActionRow(title=game.get("name", ""), subtitle=game.get("title_id", ""))
+            del_btn = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+            del_btn.add_css_class("flat")
+            del_btn.set_valign(Gtk.Align.CENTER)
+            del_btn.set_tooltip_text(f"Remove {game.get('name', '')}")
+            del_btn.connect("clicked", self._on_delete_custom_game, game.get("title_id", ""))
+            row.add_suffix(del_btn)
+            self._custom_game_rows.append(row)
+            self._custom_games_group.add(row)
+        return False
+
+    def _on_add_custom_game(self, *_args):
+        from ..config import game_catalog, normalize_title_id
+
+        title_id = normalize_title_id(self._custom_game_id_entry.get_text())
+        name = self._custom_game_name_entry.get_text().strip()
+        if title_id is None:
+            self._games_error.set_label("That is not a 16-digit hex title ID.")
+            return
+        if not name:
+            self._games_error.set_label("Give the game a name.")
+            return
+        if title_id in game_catalog(self.cfg):
+            self._games_error.set_label("That game is already in the catalog.")
+            return
+        self._games_error.set_label("")
+        self.cfg.setdefault("custom_games", []).append({"title_id": title_id, "name": name})
+        save_config(self.cfg)
+        self._custom_game_id_entry.set_text("")
+        self._custom_game_name_entry.set_text("")
+        self._refresh_games()
+
+    def _on_delete_custom_game(self, _btn, title_id):
+        self.cfg["custom_games"] = [
+            g
+            for g in (self.cfg.get("custom_games", []) or [])
+            if not (isinstance(g, dict) and (g.get("title_id") or "").upper() == title_id)
+        ]
+        save_config(self.cfg)
+        self._refresh_games()
+
+    def _on_open_data_folder(self, *_args):
+        from ..tasks import _on_host
+
+        folder = Path(self.cfg["install_dir"])
+        folder.mkdir(parents=True, exist_ok=True)
+        subprocess.Popen(_on_host(["xdg-open", str(folder)]))
+
+    def _on_panel_changed(self):
+        # The panel saves straight to disk with its own cfg copy; pull the
+        # fresh projects list into ours (in place - open editors may hold
+        # the same object) so a later Settings save cannot clobber a PR
+        # entry with a stale list.
+        try:
+            self.cfg["projects"] = load_config().get("projects", self.cfg.get("projects", []))
+        except Exception:
+            pass
+        if self.on_changed:
+            self.on_changed()
+
+    def show_page(self, name):
+        """Select a sidebar page by name (screenshot hook)."""
+        self._layout.show_page(name)
 
     def _launch_index(self, value):
         return self._launch_values.index(value) if value in self._launch_values else 0
@@ -864,10 +1212,21 @@ class SettingsWindow(Adw.Window):
             if p.get("is_pr"):
                 # one-off PR builds are managed in the PR Builds dialog
                 continue
-            row = Adw.ActionRow(title=p.get("name", p.get("id", "")), subtitle=p.get("source_url", ""))
+            try:
+                from ..config import best_for_summary, project_tooltip
+            except Exception:
+                best_for_summary = project_tooltip = None
+            summary = best_for_summary(p) if best_for_summary else ""
+            url = p.get("source_url", "")
+            subtitle = f"{summary} - {url}" if summary else url
+            row = Adw.ActionRow(title=p.get("name", p.get("id", "")), subtitle=subtitle)
+            if project_tooltip:
+                try:
+                    row.set_tooltip_text(project_tooltip(p) or None)
+                except Exception:
+                    pass
             row.set_activatable(True)
             row.connect("activated", self._on_row_activated)
-            url = p.get("source_url", "")
             globe = Path(__file__).resolve().parents[1] / "icons" / "globe-symbolic.svg"
             if globe.exists():
                 icon = Gtk.Image.new_from_file(str(globe))
@@ -880,6 +1239,12 @@ class SettingsWindow(Adw.Window):
             link_btn.set_tooltip_text(f"Open {url}")
             link_btn.connect("clicked", self._on_link_clicked, url)
             row.add_suffix(link_btn)
+            edit_btn = Gtk.Button.new_from_icon_name("document-edit-symbolic")
+            edit_btn.add_css_class("flat")
+            edit_btn.set_valign(Gtk.Align.CENTER)
+            edit_btn.set_tooltip_text(f"Edit {p.get('name', p.get('id', ''))}")
+            edit_btn.connect("clicked", self._on_edit_clicked, p)
+            row.add_suffix(edit_btn)
             del_btn = Gtk.Button.new_from_icon_name("user-trash-symbolic")
             del_btn.add_css_class("flat")
             del_btn.set_valign(Gtk.Align.CENTER)
@@ -922,24 +1287,33 @@ class SettingsWindow(Adw.Window):
         if proj:
             self._edit_project(proj)
 
+    def _on_edit_clicked(self, _btn, proj):
+        if proj:
+            self._edit_project(proj)
+
     def _edit_project(self, proj):
-        def open_editor(branches, default_branch=None):
-            self._open_source_editor(proj, branches, default_branch)
+        # Open immediately; the branch list fills in when the API responds
+        # instead of making the dialog wait on the network.
+        dialog = self._open_source_editor(proj)
 
         def fetch():
             try:
                 branches = list_branches(proj.get("source_url", ""), cfg=self.cfg) or []
             except Exception:
                 branches = []
-            try:
-                default_branch = get_default_branch(proj.get("source_url", ""), self.cfg)
-            except Exception:
-                default_branch = None
             if not branches and proj.get("branch"):
                 branches = [proj["branch"]]
-            GLib.idle_add(open_editor, branches, default_branch)
+            GLib.idle_add(self._update_editor_branches, dialog, branches)
 
         threading.Thread(target=fetch, daemon=True).start()
+
+    @staticmethod
+    def _update_editor_branches(dialog, branches):
+        try:
+            dialog.update_branches(branches)
+        except Exception:
+            pass
+        return False
 
     def _save_project(self, project, old_id):
         projects = self.cfg.get("projects", [])
@@ -952,24 +1326,28 @@ class SettingsWindow(Adw.Window):
         if self.on_changed:
             self.on_changed()
 
-    def _open_source_editor(self, proj, branches=None, default_branch=None):
+    def _open_source_editor(self, proj, branches=None, default_branch=None, tab=None):
         prefill = {"branches": branches} if branches else {}
         if default_branch:
             prefill["default_branch"] = default_branch
-        ProjectEditDialog(
+        dialog = ProjectEditDialog(
             self,
             proj,
             self._save_project,
             prefill=prefill,
             cfg=self.cfg,
             on_storage_changed=self.on_changed,
-        ).present()
+        )
+        if tab and getattr(dialog, "_layout", None) is not None:
+            dialog.show_page(tab)
+        dialog.present()
+        return dialog
 
-    def open_source_editor(self, pid):
+    def open_source_editor(self, pid, tab=None):
         """Open a source's editor without fetching branches (screenshot hook)."""
         proj = next((p for p in self.cfg.get("projects", []) if p.get("id") == pid), None)
         if proj is not None:
-            self._open_source_editor(proj)
+            self._open_source_editor(proj, tab=tab)
 
     def _on_delete_clicked(self, _btn, proj):
         name = proj.get("name", proj.get("id", "this source"))
@@ -999,6 +1377,8 @@ class SettingsWindow(Adw.Window):
         pid = proj.get("id")
         remove_project_data(self.cfg, pid)
         self.cfg["projects"] = [p for p in self.cfg.get("projects", []) if p.get("id") != pid]
+        if pid and pid not in self.cfg.get("deleted_projects", []):
+            self.cfg.setdefault("deleted_projects", []).append(pid)
         if proj.get("remote") and proj.get("id") not in self.cfg.get("hidden_sources", []):
             self.cfg.setdefault("hidden_sources", []).append(proj["id"])
         if self.cfg.get("project") == proj.get("id"):

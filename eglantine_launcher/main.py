@@ -66,7 +66,19 @@ def main() -> int:
     )
     parser.add_argument("--settings", action="store_true", help="Open the Settings window on launch")
     parser.add_argument(
+        "--settings-page",
+        choices=["general", "github", "backups", "sources", "games", "prs"],
+        default="general",
+        help="Which Settings page to show with --settings (screenshots)",
+    )
+    parser.add_argument(
         "--edit-source", action="store_true", help="Open a source's editor on launch (screenshots)"
+    )
+    parser.add_argument(
+        "--edit-source-tab",
+        choices=["settings", "storage", "tags"],
+        default="settings",
+        help="Which tab the source editor opens on (screenshots)",
     )
     parser.add_argument("--about", action="store_true", help="Open the About dialog on launch")
     parser.add_argument("--pr-builds", action="store_true", help="Open the PR Builds dialog on launch")
@@ -147,10 +159,12 @@ def main() -> int:
             self._window.restore_from_tray()
             if args.settings or args.edit_source:
                 settings = self._window.on_settings()
+                if settings is not None and args.settings_page != "general":
+                    settings.show_page(args.settings_page)
                 if args.edit_source and settings is not None:
                     sources = [p for p in settings.cfg.get("projects", []) if not p.get("is_pr")]
                     if sources:
-                        settings.open_source_editor(sources[0].get("id"))
+                        settings.open_source_editor(sources[0].get("id"), tab=args.edit_source_tab)
             if args.about:
                 self._window.on_about()
             if args.pr_builds:

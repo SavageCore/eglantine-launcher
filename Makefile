@@ -1,4 +1,4 @@
-.PHONY: help lint format check test screenshot screenshots clean appimage release major minor patch
+.PHONY: help lint format check test screenshot screenshots registry clean appimage release major minor patch
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -21,6 +21,9 @@ screenshot: screenshots ## Take light + dark screenshots
 
 screenshots: ## Take light + dark screenshots of each page into docs/screenshots/
 	bash scripts/take-screenshots.sh
+
+registry: ## Regenerate data/sources.json + data/games.json from config.py
+	python3 scripts/regen-registry.py
 
 clean: ## Remove build artefacts
 	rm -rf build dist .pytest_cache

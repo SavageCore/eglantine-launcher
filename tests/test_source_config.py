@@ -485,10 +485,75 @@ def test_make_pr_project_keeps_config_fields():
         "config_key": "shared",
         "config_seeded": True,
         "last_built_commit": "deadbeef",
+        "best_for": [{"title_id": "0400C3F00006E000", "name": "Mario Kart World"}],
+        "tags": [{"id": "fix", "label": "fix", "tooltip": "Fixes mods on NUP"}],
     }
     project = tasks.make_pr_project("PR", "https://github.com/o/r/pull/1", {}, existing=existing)
     assert project["config_key"] == "shared"
     assert project["config_seeded"] is True
+    assert project["best_for"] == existing["best_for"]
+    assert project["tags"] == existing["tags"]
+
+
+def test_pr_edit_dialog_tags_round_trip(needs_display, fake_home):
+    from eglantine_launcher.ui.pr_dialog import PREditDialog
+
+    existing = {
+        "id": "pr-x",
+        "pr_url": "https://github.com/o/r/pull/9",
+        "source_url": "https://github.com/o/r.git",
+        "pr_head_sha": "abc123",
+        "best_for": [{"title_id": "0400C3F00006E000", "name": "Mario Kart World"}],
+        "tags": [{"id": "fix", "label": "fix", "tooltip": "Fixes mods on NUP"}],
+    }
+    dialog = PREditDialog(None, existing, lambda *a: None, cfg={})
+    try:
+        # existing games come pre-checked, existing tags pre-filled
+        assert dialog._game_checks["0400C3F00006E000"].get_active()
+        assert not dialog._game_checks["040074A01BF12000"].get_active()
+        assert len(dialog._tag_editor) == 1
+        # check another game, drop the tag text to skip it
+        dialog._game_checks["040074A01BF12000"].set_active(True)
+        dialog._tag_editor._entries[0][0].set_text("  ")
+        dialog._pending_tags = dialog._collect_tag_state()
+        saved = {}
+        dialog.on_save = lambda project, _old: saved.update(project=project)
+        dialog._save_done({"id": "pr-x", "source_url": "https://github.com/o/r.git"})
+        assert {b["title_id"] for b in saved["project"]["best_for"]} == {
+            "0400C3F00006E000",
+            "040074A01BF12000",
+        }
+        assert saved["project"]["tags"] == []
+    finally:
+        dialog.close()
+
+
+def test_pr_edit_dialog_saves_tags_without_network(needs_display, fake_home):
+    """Tag-only edits save offline: unchanged URL skips the PR lookup."""
+    from eglantine_launcher.ui.pr_dialog import PREditDialog
+
+    existing = {
+        "id": "pr-x",
+        "name": "Fix NUP mods (#366)",
+        "pr_url": "https://github.com/o/r/pull/9",
+        "source_url": "https://github.com/o/r.git",
+        "branch": "pr-9",
+        "pr_head_sha": "abc123",
+        "tags": [],
+    }
+    dialog = PREditDialog(None, existing, lambda *a: None, cfg={})
+    try:
+        dialog._tag_editor.add_tag("fix", "Fixes mods on NUP")
+        saved = {}
+        dialog.on_save = lambda project, _old: saved.update(project=project)
+        dialog._save()
+        assert saved["project"]["tags"] == [{"id": "fix", "label": "fix", "tooltip": "Fixes mods on NUP"}]
+        assert saved["project"]["pr_head_sha"] == "abc123"
+    finally:
+        try:
+            dialog.close()
+        except Exception:
+            pass
 
 
 def test_pr_edit_dialog_sets_settings_folder(needs_display, fake_home):
@@ -538,3 +603,187 @@ def test_edit_dialog_shows_and_saves_config_folder(needs_display, fake_home):
         assert override.config_key_entry.get_text() == "shared"
     finally:
         override.close()
+
+
+def test_edit_dialog_tags_tab_saves_user_overlay(needs_display, fake_home):
+    from eglantine_launcher.config import DEFAULT_PROJECTS
+    from eglantine_launcher.ui.settings_window import ProjectEditDialog
+
+    eglantine = next(p for p in DEFAULT_PROJECTS if p["id"] == "eglantine")
+    cfg = {"projects": []}
+    saved = {}
+    dialog = ProjectEditDialog(
+        None, dict(eglantine), lambda project, _old: saved.update(project=project), cfg=cfg
+    )
+    try:
+        # Tags tab exists alongside Settings and Storage.
+        assert dialog._stack is not None
+        assert dialog._stack.get_child_by_name("tags") is not None
+        # Curated games are not offered as user games.
+        assert "0400C3F00006E000" not in dialog._user_game_checks
+        check, note_entry, _name = dialog._user_game_checks["040074A01BF12000"]
+        check.set_active(True)
+        note_entry.set_text("Runs great here")
+        dialog._user_tags_editor.add_tag("fix", "Fixes mods on NUP")
+        dialog._save()
+    finally:
+        try:
+            dialog.close()
+        except Exception:
+            pass
+    assert saved["project"]["user_best_for"] == [
+        {"title_id": "040074A01BF12000", "name": "Donkey Kong Bananza", "note": "Runs great here"}
+    ]
+    assert saved["project"]["user_tags"] == [{"id": "fix", "label": "fix", "tooltip": "Fixes mods on NUP"}]
+    # curated entries are preserved untouched
+    assert saved["project"]["best_for"] == eglantine["best_for"]
+
+
+def test_edit_dialog_tags_tab_add_game(needs_display, fake_home):
+    from eglantine_launcher.config import DEFAULT_PROJECTS
+    from eglantine_launcher.ui.settings_window import ProjectEditDialog
+
+    eglantine = next(p for p in DEFAULT_PROJECTS if p["id"] == "eglantine")
+    cfg = {"projects": []}
+    saved = {}
+    dialog = ProjectEditDialog(
+        None, dict(eglantine), lambda project, _old: saved.update(project=project), cfg=cfg
+    )
+    try:
+        assert "0400999900000000" not in dialog._user_game_checks
+        dialog._new_game_id_entry.set_text("0400999900000000")
+        dialog._new_game_name_entry.set_text("Mine")
+        dialog._on_add_user_game()
+        assert "0400999900000000" in dialog._user_game_checks
+        assert cfg["custom_games"] == [{"title_id": "0400999900000000", "name": "Mine"}]
+        # invalid IDs are rejected, not added
+        dialog._new_game_id_entry.set_text("nope")
+        dialog._on_add_user_game()
+        assert "16-digit" in dialog._user_game_error.get_label()
+    finally:
+        try:
+            dialog.close()
+        except Exception:
+            pass
+
+
+def test_tags_tab_upstream_links_to_wichforks(needs_display, fake_home):
+    from gi.repository import Gtk
+
+    from eglantine_launcher.config import DEFAULT_PROJECTS
+    from eglantine_launcher.ui.settings_window import ProjectEditDialog
+
+    eglantine = next(p for p in DEFAULT_PROJECTS if p["id"] == "eglantine")
+    dialog = ProjectEditDialog(None, dict(eglantine), lambda *a: None, cfg={"projects": []})
+    try:
+        dialog.show_page("tags")
+        found = []
+
+        def walk(widget):
+            if isinstance(widget, Gtk.LinkButton):
+                found.append(widget.get_uri())
+                return
+            child = widget.get_first_child()
+            while child is not None:
+                walk(child)
+                child = child.get_next_sibling()
+
+        walk(dialog._layout.stack)
+        assert "https://github.com/riyadhHDA/wichforks" in found
+    finally:
+        try:
+            dialog.close()
+        except Exception:
+            pass
+
+
+def test_pr_dialog_lists_custom_games(needs_display, fake_home):
+    from eglantine_launcher.ui.pr_dialog import PREditDialog
+
+    cfg = {"custom_games": [{"title_id": "0400999900000000", "name": "Mine"}]}
+    dialog = PREditDialog(None, None, lambda *a: None, cfg=cfg)
+    try:
+        assert "0400999900000000" in dialog._game_checks
+        dialog._game_checks["0400999900000000"].set_active(True)
+        games, _tags = dialog._collect_tag_state()
+        assert {"title_id": "0400999900000000", "name": "Mine"} in games
+    finally:
+        dialog.close()
+
+
+def test_tag_list_editor_collects_and_slugs(needs_display, fake_home):
+    from eglantine_launcher.ui.taglist import TagListEditor, slugify
+
+    assert slugify("Fix NUP Mods!") == "fix-nup-mods"
+    assert slugify("  ") == ""
+    editor = TagListEditor()
+    editor.add_tag("fix", "Fixes mods on NUP")
+    editor.add_tag("  ", "skipped")
+    editor.add_tag("AMD", "")
+    assert editor.collect() == [
+        {"id": "fix", "label": "fix", "tooltip": "Fixes mods on NUP"},
+        {"id": "amd", "label": "AMD", "tooltip": ""},
+    ]
+    assert len(editor) == 3
+
+
+def test_sidebar_layout_pages(needs_display, fake_home):
+    from gi.repository import Gtk
+
+    from eglantine_launcher.ui.sidebar import SidebarLayout
+
+    layout = SidebarLayout([("a", "A"), ("b", "B")])
+    layout.add_page("a", Gtk.Label(label="page a"))
+    layout.add_page("b", Gtk.Label(label="page b"))
+    assert layout.visible_page == "a"
+    layout.show_page("b")
+    assert layout.visible_page == "b"
+    layout.show_page("nope")
+    assert layout.visible_page == "b"
+
+
+def test_source_editor_uses_sidebar(needs_display, fake_home):
+    from eglantine_launcher.config import DEFAULT_PROJECTS
+    from eglantine_launcher.ui.settings_window import ProjectEditDialog
+
+    eglantine = next(p for p in DEFAULT_PROJECTS if p["id"] == "eglantine")
+    dialog = ProjectEditDialog(None, dict(eglantine), lambda *a: None, cfg={"projects": []})
+    try:
+        assert dialog._layout is not None
+        assert dialog._layout.visible_page == "settings"
+        dialog.show_page("tags")
+        assert dialog._layout.visible_page == "tags"
+    finally:
+        try:
+            dialog.close()
+        except Exception:
+            pass
+
+
+def test_pr_add_saves_offline_stub(needs_display, fake_home, monkeypatch):
+    """Rate-limited/offline Add still saves a stub that refreshes later."""
+    from gi.repository import GLib
+
+    import eglantine_launcher.ui.pr_dialog as prmod
+
+    def _offline(*a, **k):
+        raise Exception("rate limited")
+
+    monkeypatch.setattr(prmod, "fetch_pr_info", _offline)
+    monkeypatch.setattr(GLib, "idle_add", lambda fn, *a, **k: fn(*a))
+    dialog = prmod.PREditDialog(None, None, lambda *a: None, cfg={})
+    try:
+        saved = {}
+        dialog.on_save = lambda project, _old: saved.update(project=project)
+        dialog._tag_editor.add_tag("fix", "Fixes mods on NUP")
+        dialog._pending_tags = dialog._collect_tag_state()
+        dialog._save_lookup("Cool fix (#12)", "https://github.com/o/r/pull/12")
+        assert saved["project"]["pr_number"] == 12
+        assert saved["project"]["pr_owner"] == "o"
+        assert saved["project"]["pr_head_sha"] == ""
+        assert saved["project"]["tags"] == [{"id": "fix", "label": "fix", "tooltip": "Fixes mods on NUP"}]
+    finally:
+        try:
+            dialog.close()
+        except Exception:
+            pass

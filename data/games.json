@@ -1,0 +1,68 @@
+{
+  "games": [
+    {
+      "title_id": "040074A01BF12000",
+      "name": "Donkey Kong Bananza"
+    },
+    {
+      "title_id": "040041E0212AE000",
+      "name": "Fast Fusion"
+    },
+    {
+      "title_id": "04007EF01F8AE000",
+      "name": "Fire Emblem: Fortune's Weave"
+    },
+    {
+      "title_id": "04003F40232DE000",
+      "name": "Hyrule Warriors: Age of Imprisonment"
+    },
+    {
+      "title_id": "040077201BE50000",
+      "name": "Kirby Air Riders"
+    },
+    {
+      "title_id": "0400C3F00006E000",
+      "name": "Mario Kart World"
+    },
+    {
+      "title_id": "0400D4201C6EA000",
+      "name": "Mario Tennis Fever"
+    },
+    {
+      "title_id": "04008E001F098000",
+      "name": "Nintendo Switch Sports Resort"
+    },
+    {
+      "title_id": "0100F43008C44000",
+      "name": "Pokémon Legends: Z-A"
+    },
+    {
+      "title_id": "0400A3A01EE4C000",
+      "name": "Pokémon Pokopia"
+    },
+    {
+      "title_id": "0400921025B32000",
+      "name": "Sonic Frontiers Definitive Edition"
+    },
+    {
+      "title_id": "0400380020056000",
+      "name": "Splatoon Raiders"
+    },
+    {
+      "title_id": "0400E88025B1A000",
+      "name": "Star Fox"
+    },
+    {
+      "title_id": "010015100B514000",
+      "name": "Super Mario Bros. Wonder"
+    },
+    {
+      "title_id": "0400245021D2C000",
+      "name": "Yoshi and the Mysterious Book"
+    },
+    {
+      "title_id": "0400486024DEC000",
+      "name": "Zelda: Ocarina of Time"
+    }
+  ]
+}

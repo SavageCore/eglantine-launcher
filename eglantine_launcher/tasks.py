@@ -138,6 +138,33 @@ def _releases_cache_path(info):
     return d / f"releases-{safe}.json"
 
 
+def _normalize_gitlab_releases(data):
+    """Map GitLab v4 release rows to the GitHub/Forgejo shape we use."""
+    out = []
+    for r in data if isinstance(data, list) else []:
+        if not isinstance(r, dict):
+            continue
+        assets = []
+        links = ((r.get("assets") or {}) if isinstance(r.get("assets"), dict) else {}).get("links", [])
+        for link in links if isinstance(links, list) else []:
+            if not isinstance(link, dict):
+                continue
+            link_url = link.get("direct_asset_url") or link.get("url")
+            name = link.get("name") or (link_url or "").rsplit("/", 1)[-1]
+            if link_url:
+                assets.append({"name": name, "browser_download_url": link_url})
+        out.append(
+            {
+                "tag_name": r.get("tag_name"),
+                "name": r.get("name") or r.get("tag_name"),
+                "body": r.get("description") or "",
+                "prerelease": bool(r.get("upcoming_release")),
+                "assets": assets,
+            }
+        )
+    return out
+
+
 def list_releases(cfg, limit=15):
     info = project_info(cfg)
     url = info.get("releases_url")
@@ -148,6 +175,8 @@ def list_releases(cfg, limit=15):
         data = api_get_json(f"{url}?{param}={limit}", cfg, timeout=30)
         if not isinstance(data, list):
             data = [data]
+        if "gitlab.com/api/v4" in url:
+            data = _normalize_gitlab_releases(data)
         _releases_cache_path(info).write_text(json.dumps(data[:limit]))
     except Exception:
         try:
@@ -381,6 +410,12 @@ def make_pr_project(name, pr_url, details=None, existing=None):
         project["config_key"] = existing["config_key"]
     if existing and existing.get("config_seeded"):
         project["config_seeded"] = True
+    if isinstance(existing, dict):
+        # Tags edited in the PR dialog survive re-saves/refreshes.
+        for key in ("best_for", "tags"):
+            items = existing.get(key)
+            if items and key not in project:
+                project[key] = [dict(i) if isinstance(i, dict) else i for i in items]
     return project
 
 
@@ -1182,6 +1217,8 @@ def remove_pr_project(cfg, pid):
             pass
     remove_project_data(cfg, pid)
     cfg["projects"] = [p for p in projects if p.get("id") != pid]
+    if pid not in cfg.get("deleted_projects", []):
+        cfg.setdefault("deleted_projects", []).append(pid)
     if heads:
         cfg["built_commits"] = [c for c in cfg.get("built_commits", []) if c not in heads]
         if cfg.get("last_source_commit") in heads:
@@ -1993,6 +2030,7 @@ def _ensure_pr_source(
 
 PGO_PROFILE_URL = "https://github.com/Eden-CI/PGO/releases/latest/download/eden.profdata"
 SOURCES_URL = "https://raw.githubusercontent.com/SavageCore/eglantine-launcher/main/data/sources.json"
+GAMES_URL = "https://raw.githubusercontent.com/SavageCore/eglantine-launcher/main/data/games.json"
 
 
 def fetch_remote_sources(cfg=None, timeout=20):
@@ -2001,6 +2039,16 @@ def fetch_remote_sources(cfg=None, timeout=20):
         data = api_get_json(SOURCES_URL, cfg, timeout=timeout)
         sources = data.get("sources", []) if isinstance(data, dict) else []
         return [s for s in sources if isinstance(s, dict) and s.get("id") and s.get("source_url")]
+    except Exception:
+        return []
+
+
+def fetch_remote_games(cfg=None, timeout=20):
+    """Game registry from the repo. Returns [] offline (callers keep shipped games)."""
+    try:
+        data = api_get_json(GAMES_URL, cfg, timeout=timeout)
+        games = data.get("games", []) if isinstance(data, dict) else []
+        return [g for g in games if isinstance(g, dict) and g.get("title_id") and g.get("name")]
     except Exception:
         return []
 

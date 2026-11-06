@@ -6,7 +6,34 @@
       "source_url": "https://github.com/Djihads80/Eglantine.git",
       "branch": "nx2",
       "releases_url": "https://api.github.com/repos/Djihads80/Eglantine/releases",
-      "include_prerelease": true
+      "include_prerelease": true,
+      "icon_url": "https://github.com/Djihads80/Eglantine/raw/refs/heads/nx2/dist/Eglantine.png",
+      "origin": "wichforks",
+      "confidence": "documented",
+      "best_for": [
+        {
+          "title_id": "0400C3F00006E000",
+          "name": "Mario Kart World",
+          "note": "Default all-round pick; widest coverage"
+        },
+        {
+          "title_id": "0400380020056000",
+          "name": "Splatoon Raiders",
+          "note": "Upstream baseline; variable performance"
+        },
+        {
+          "title_id": "04003F40232DE000",
+          "name": "Hyrule Warriors: Age of Imprisonment",
+          "note": "Build 202+ fix set (46-49 FPS median reported)"
+        }
+      ],
+      "tags": [
+        {
+          "id": "default",
+          "label": "Default",
+          "tooltip": "Central upstream; most tested, most forks rebase on it"
+        }
+      ]
     },
     {
       "id": "pokedinner",
@@ -14,7 +41,318 @@
       "source_url": "https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork.git",
       "branch": "master",
       "releases_url": "https://git.eden-emu.dev/api/v1/repos/Franseven/PokeDinner-a-Eglantine-Fork/releases",
-      "include_prerelease": true
+      "include_prerelease": true,
+      "icon_url": "https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork/raw/branch/master/dist/Eglantine.png",
+      "origin": "wichforks",
+      "confidence": "documented",
+      "best_for": [
+        {
+          "title_id": "040074A01BF12000",
+          "name": "Donkey Kong Bananza",
+          "note": "2.5 with 30 FPS option (recent AMD result)"
+        },
+        {
+          "title_id": "0400A3A01EE4C000",
+          "name": "Pokemon Pokopia",
+          "note": "Invisible-item and sky fixes"
+        },
+        {
+          "title_id": "0400380020056000",
+          "name": "Splatoon Raiders",
+          "note": "Textbox, texture and HDR fixes"
+        },
+        {
+          "title_id": "0400C3F00006E000",
+          "name": "Mario Kart World",
+          "note": "Listed as ingame"
+        },
+        {
+          "title_id": "0400486024DEC000",
+          "name": "Zelda: Ocarina of Time",
+          "note": "Initial support"
+        }
+      ],
+      "tags": [
+        {
+          "id": "lab",
+          "label": "Compatibility lab",
+          "tooltip": "Per-game fix builds; pick when a game boots better here"
+        },
+        {
+          "id": "swap",
+          "label": "Needs swap",
+          "tooltip": "Author asks for 12 GB DRAM plus 32 GB pagefile/swap"
+        }
+      ]
+    },
+    {
+      "id": "smiley",
+      "name": "Eglantine (SmileyTatsu)",
+      "source_url": "https://github.com/SmileyTatsu/Eglantine.git",
+      "branch": "smileytatsu/dev-rebased",
+      "releases_url": "https://api.github.com/repos/SmileyTatsu/Eglantine/releases",
+      "include_prerelease": true,
+      "origin": "wichforks",
+      "confidence": "documented",
+      "best_for": [
+        {
+          "title_id": "0400C3F00006E000",
+          "name": "Mario Kart World",
+          "note": "Build 11/12; 45-50 FPS avg, near 60 docked on AMD"
+        }
+      ],
+      "tags": [
+        {
+          "id": "mkw",
+          "label": "MKW specialist",
+          "tooltip": "Pipeline-cache changes and MKW frame-rate fix not all merged upstream"
+        }
+      ]
+    },
+    {
+      "id": "orchid",
+      "name": "Orchid (MythosOfs)",
+      "source_url": "https://github.com/MythosOfs/Orchid.git",
+      "branch": "main",
+      "releases_url": "https://api.github.com/repos/MythosOfs/Orchid/releases",
+      "include_prerelease": true,
+      "origin": "wichforks",
+      "confidence": "documented",
+      "best_for": [
+        {
+          "title_id": "0400486024DEC000",
+          "name": "Zelda: Ocarina of Time",
+          "note": "v0.7.4 exposure/fog/vegetation fixes; OoT perf unmeasured"
+        },
+        {
+          "title_id": "0400D4201C6EA000",
+          "name": "Mario Tennis Fever",
+          "note": "60 FPS reported (5800X3D + RX 9070 XT)"
+        },
+        {
+          "title_id": "010015100B514000",
+          "name": "Super Mario Bros. Wonder",
+          "note": "60 FPS reported"
+        },
+        {
+          "title_id": "0400C3F00006E000",
+          "name": "Mario Kart World",
+          "note": "30-40 FPS with asset glitches"
+        }
+      ],
+      "tags": [
+        {
+          "id": "amd",
+          "label": "AMD",
+          "tooltip": "AMD-focused shader/GPU fixes; developed on RX 9070 XT"
+        }
+      ]
+    },
+    {
+      "id": "notsapinho",
+      "name": "Eglantine (notsapinho)",
+      "source_url": "https://github.com/notsapinho/Eglantine.git",
+      "branch": "main",
+      "releases_url": "https://api.github.com/repos/notsapinho/Eglantine/releases",
+      "include_prerelease": true,
+      "origin": "wichforks",
+      "confidence": "documented",
+      "best_for": [
+        {
+          "title_id": "0400A3A01EE4C000",
+          "name": "Pokemon Pokopia",
+          "note": "Listed playable; 120fps mod, 80+ FPS on RTX 4060 Mobile"
+        },
+        {
+          "title_id": "0400C3F00006E000",
+          "name": "Mario Kart World",
+          "note": "Listed as supported"
+        },
+        {
+          "title_id": "0400380020056000",
+          "name": "Splatoon Raiders",
+          "note": "Listed as supported"
+        }
+      ],
+      "tags": [
+        {
+          "id": "avx2",
+          "label": "AVX2 required",
+          "tooltip": "x86_64 builds need Haswell/Ryzen or newer"
+        }
+      ]
+    },
+    {
+      "id": "lichii",
+      "name": "Lichii (zortos293)",
+      "source_url": "https://github.com/zortos293/Lichii.git",
+      "branch": "nx2",
+      "releases_url": "https://api.github.com/repos/zortos293/Lichii/releases",
+      "include_prerelease": true,
+      "origin": "wichforks",
+      "confidence": "community-reported",
+      "best_for": [
+        {
+          "title_id": "0400486024DEC000",
+          "name": "Zelda: Ocarina of Time",
+          "note": "Build-80 playable with visual bugs; CPU-bound (20-60 FPS by CPU)"
+        },
+        {
+          "title_id": "0400E88025B1A000",
+          "name": "Star Fox",
+          "note": "Community-reported game-patch build"
+        },
+        {
+          "title_id": "0400D4201C6EA000",
+          "name": "Mario Tennis Fever",
+          "note": "Community-reported game-patch build"
+        },
+        {
+          "title_id": "040074A01BF12000",
+          "name": "Donkey Kong Bananza",
+          "note": "Also attributed to this fork"
+        }
+      ],
+      "tags": [
+        {
+          "id": "actions",
+          "label": "Actions artifacts",
+          "tooltip": "Newest builds are Actions artifacts (expire, need GitHub login); Releases lag behind"
+        },
+        {
+          "id": "cpu",
+          "label": "Fast CPU needed",
+          "tooltip": "Single-core speed looks like the limit; try non-PGO on black screens"
+        }
+      ]
+    },
+    {
+      "id": "droplet",
+      "name": "Droplet (private online)",
+      "source_url": "https://gitlab.com/seighttt/droplet.git",
+      "branch": "main",
+      "releases_url": "https://gitlab.com/api/v4/projects/seighttt%2Fdroplet/releases",
+      "include_prerelease": true,
+      "origin": "wichforks",
+      "confidence": "documented",
+      "best_for": [
+        {
+          "title_id": "0400C3F00006E000",
+          "name": "Mario Kart World",
+          "note": "Private online via self-hosted Reservoir server"
+        },
+        {
+          "title_id": "0400380020056000",
+          "name": "Splatoon Raiders",
+          "note": "Private online via self-hosted Reservoir server"
+        }
+      ],
+      "tags": [
+        {
+          "id": "online",
+          "label": "Private online",
+          "tooltip": "Reservoir replaces Nintendo NPLN; emulators only, host your own server"
+        },
+        {
+          "id": "arch",
+          "label": "Arch binary",
+          "tooltip": "Upstream Linux binary targets Arch; other distros build from source"
+        }
+      ]
+    },
+    {
+      "id": "rdenno",
+      "name": "Eglantine nx2-merged (rdenno)",
+      "source_url": "https://github.com/rdenno/Eglantine.git",
+      "branch": "nx2",
+      "releases_url": "https://api.github.com/repos/rdenno/Eglantine/releases",
+      "include_prerelease": true,
+      "origin": "wichforks",
+      "confidence": "community-reported",
+      "best_for": [
+        {
+          "title_id": "04003F40232DE000",
+          "name": "Hyrule Warriors: Age of Imprisonment",
+          "note": "Second build of the 202+ fix set; compare against upstream"
+        }
+      ],
+      "tags": []
+    },
+    {
+      "id": "selevet",
+      "name": "Selevet Eglantine",
+      "source_url": "https://github.com/sylvieistaken/selevet-eglantine.git",
+      "branch": "main",
+      "releases_url": "https://api.github.com/repos/sylvieistaken/selevet-eglantine/releases",
+      "include_prerelease": true,
+      "origin": "wichforks",
+      "confidence": "documented",
+      "best_for": [
+        {
+          "title_id": "040074A01BF12000",
+          "name": "Donkey Kong Bananza",
+          "note": "30 FPS cap and 60 smooth motion reported"
+        }
+      ],
+      "tags": [
+        {
+          "id": "zen3",
+          "label": "Zen 3 tuned",
+          "tooltip": "PGO + ThinLTO build tuned for Zen 3, faster GPU mapping"
+        }
+      ]
+    },
+    {
+      "id": "zendnevs",
+      "name": "Eglantine ZendNevs",
+      "source_url": "https://github.com/ZendNevs/Eglantine-ZendNevs.git",
+      "branch": "main",
+      "releases_url": "https://api.github.com/repos/ZendNevs/Eglantine-ZendNevs/releases",
+      "include_prerelease": true,
+      "origin": "wichforks",
+      "confidence": "documented",
+      "best_for": [
+        {
+          "title_id": "0400C3F00006E000",
+          "name": "Mario Kart World",
+          "note": "Self-reported ~56 FPS avg with DynamicFPS"
+        },
+        {
+          "title_id": "040074A01BF12000",
+          "name": "Donkey Kong Bananza",
+          "note": "Self-reported ~33 FPS avg; hitches up to 0.6 s"
+        }
+      ],
+      "tags": [
+        {
+          "id": "framegen",
+          "label": "Frame generation",
+          "tooltip": "FSR 3 / LSFG frame generation plus DynamicFPS and 30 FPS lock"
+        },
+        {
+          "id": "caution",
+          "label": "Release-only",
+          "tooltip": "2-commit repo, no license, self-reported numbers; independent reports favor SmileyTatsu/Selevet"
+        }
+      ]
+    },
+    {
+      "id": "3060ti",
+      "name": "Eglantine 3060Ti 16GB",
+      "source_url": "https://github.com/astralbeexd/Eglantine-3060Ti-16GB.git",
+      "branch": "main",
+      "releases_url": "https://api.github.com/repos/astralbeexd/Eglantine-3060Ti-16GB/releases",
+      "include_prerelease": true,
+      "origin": "wichforks",
+      "confidence": "unverified",
+      "best_for": [],
+      "tags": [
+        {
+          "id": "niche",
+          "label": "RTX 3060 Ti 16GB",
+          "tooltip": "Patch set plus binary for one GPU; not a full source tree, unverified"
+        }
+      ]
     }
   ]
 }

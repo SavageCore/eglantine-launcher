@@ -1,4 +1,3 @@
-import subprocess
 import threading
 from pathlib import Path
 
@@ -9,15 +8,63 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk, Pango
 
 from .. import __version__
+from ..config import effective_best_for, effective_tags, project_tooltip
 from ..config import load as load_config
 from ..config import save as save_config
+
+# Non-selectable divider below favourited projects in the Project dropdown.
+# Favourites sort first so one-off builds never hide below the fold behind
+# a dozen forks once the user stars them.
+PROJECT_SEPARATOR = "────────────"
+
+_PILL_CSS = b"""
+.eglantine-pill {
+    border-radius: 9999px;
+    padding: 1px 10px;
+    font-size: smaller;
+}
+.pill-tone-0 { background-color: alpha(@accent_bg_color, 0.22); }
+.pill-tone-1 { background-color: alpha(@success_bg_color, 0.25); }
+.pill-tone-2 { background-color: alpha(@warning_bg_color, 0.30); }
+.pill-tone-3 { background-color: alpha(@error_bg_color, 0.20); }
+.pill-tone-4 { background-color: alpha(@accent_bg_color, 0.12); }
+.fav-active { color: @accent_color; }
+/* Pills are display-only: kill the FlowBoxChild hover/focus highlight so
+   they never look interactive. */
+.eglantine-pills > flowboxchild { background: transparent; }
+.eglantine-pills > flowboxchild:hover { background: transparent; }
+.eglantine-pills > flowboxchild:focus { outline: none; }
+.eglantine-pills > flowboxchild:selected { background: transparent; }
+"""
+_PILL_TONES = 5
+_pill_css_loaded = False
+
+
+def _ensure_pill_css():
+    """Register pill badge styling once (needs a display; safe to call blindly)."""
+    global _pill_css_loaded
+    if _pill_css_loaded:
+        return
+    try:
+        from gi.repository import Gdk
+
+        display = Gdk.Display.get_default()
+        if display is None:
+            return
+        provider = Gtk.CssProvider()
+        provider.load_from_data(_PILL_CSS)
+        Gtk.StyleContext.add_provider_for_display(display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        _pill_css_loaded = True
+    except Exception:
+        pass
+
+
 from ..tasks import (
     LAUNCHER_API_LATEST,
     REPOS_PAGE,
     UPDATE_COMMANDS,
     BuildCancelled,
     _in_flatpak,
-    _on_host,
     build_source,
     build_windows_updater,
     check_build_deps,
@@ -25,6 +72,7 @@ from ..tasks import (
     detect_install_method,
     download_url,
     fetch_pr_info,
+    fetch_remote_games,
     fetch_remote_sources,
     find_release_for_commit,
     get_project_last_built,
@@ -49,11 +97,9 @@ from ..tasks import (
     stage_appimage_swap,
     windows_install_dir,
 )
-from ..tasks import arch as get_arch
 from ..tray import hide_to_tray, minimize_to_taskbar
 from ..tray import restore as restore_window
 from .deps_dialog import DepsDialog
-from .pr_dialog import PRBuildsDialog
 from .settings_window import SettingsWindow
 
 
@@ -113,12 +159,6 @@ class LauncherWindow(Adw.ApplicationWindow):
         about_action = Gio.SimpleAction.new("about", None)
         about_action.connect("activate", self.on_about)
         self.add_action(about_action)
-        folder_action = Gio.SimpleAction.new("folder", None)
-        folder_action.connect("activate", self.on_open_folder)
-        self.add_action(folder_action)
-        pr_action = Gio.SimpleAction.new("pr-builds", None)
-        pr_action.connect("activate", self.on_pr_builds)
-        self.add_action(pr_action)
         self._build_menu()
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -130,15 +170,45 @@ class LauncherWindow(Adw.ApplicationWindow):
         group = Adw.PreferencesGroup()
 
         self.project_row = Adw.ComboRow(title="Project")
-        self._project_ids = [p.get("id") for p in self.cfg.get("projects", [])]
-        project_model = Gtk.StringList.new([p.get("name", p.get("id")) for p in self.cfg.get("projects", [])])
-        self.project_row.set_model(project_model)
-        cur = self.cfg.get("project")
-        if cur in self._project_ids:
-            self.project_row.set_selected(self._project_ids.index(cur))
-        else:
-            self.project_row.set_selected(0)
+        if hasattr(self.project_row, "set_enable_search"):
+            self.project_row.set_enable_search(True)
+        # The search entry needs an expression to obtain strings from items;
+        # without it the entry shows but never filters.
+        self.project_row.set_expression(Gtk.PropertyExpression.new(Gtk.StringObject, None, "string"))
+        if hasattr(self.project_row, "set_search_match_mode"):
+            self.project_row.set_search_match_mode(Gtk.StringFilterMatchMode.SUBSTRING)
+        # Popup rows show ★ for favourites and a dimmed divider; the closed
+        # row keeps the plain model string.
+        self.project_row.set_list_factory(self._make_project_list_factory())
+        self.star_btn = Gtk.Button()
+        self.star_btn.add_css_class("flat")
+        self.star_btn.set_valign(Gtk.Align.CENTER)
+        # Fixed box plus a single ★ glyph whose color alone changes state:
+        # swapping icon images shifts the row, recoloring cannot.
+        self.star_btn.set_size_request(32, 32)
+        self._star_label = Gtk.Label(label="★")
+        self._star_label.set_halign(Gtk.Align.CENTER)
+        self._star_label.set_valign(Gtk.Align.CENTER)
+        self.star_btn.set_child(self._star_label)
+        self.star_btn.connect("clicked", self._on_star_clicked)
+        self.project_row.add_suffix(self.star_btn)
+        self._project_ids = []
+        self._last_project_idx = 0
+        self._set_project_model()
+        self._last_project_idx = self.project_row.get_selected()
+        self.tag_flow = Gtk.FlowBox()
+        self.tag_flow.add_css_class("eglantine-pills")
+        self.tag_flow.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.tag_flow.set_max_children_per_line(10)
+        self.tag_flow.set_column_spacing(6)
+        self.tag_flow.set_row_spacing(6)
+        self.tag_flow.set_margin_start(12)
+        self.tag_flow.set_margin_end(12)
+        self.tag_flow.set_margin_top(10)
+        self.tag_flow.set_margin_bottom(6)
+        self._update_project_row_meta()
         group.add(self.project_row)
+        group.add(self.tag_flow)
 
         self.mode_row = Adw.ComboRow(title="Mode")
         mode_model = Gtk.StringList.new(["Release (download)", "Build from source"])
@@ -162,10 +232,6 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.pgo_row.set_active(bool(self.cfg.get("pgo", True)))
         group.add(self.pgo_row)
 
-        arch_row = Adw.ActionRow(title="Architecture")
-        arch_row.set_subtitle(get_arch())
-        group.add(arch_row)
-
         box.append(group)
 
         self.project_row.connect("notify::selected", self._on_selector_changed)
@@ -176,6 +242,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         if not auto:
             GLib.timeout_add_seconds(3600, self._hourly_tick)
             GLib.timeout_add_seconds(60, self._initial_update_check)
+            GLib.timeout_add_seconds(60, self._poll_external_changes)
 
         self.banner = Adw.Banner.new("")
         self.banner.set_revealed(False)
@@ -231,11 +298,11 @@ class LauncherWindow(Adw.ApplicationWindow):
         # Banner sits edge-to-edge above the margined content; toasts
         # overlay everything transiently; Launch lives in a proper
         # bottom ActionBar instead of a hand-rolled button box.
-        # Box is centered so extra height (e.g. after the About dialog
-        # grew the window) splits above/below instead of pooling as
-        # dead space between the prefs and the Launch bar.
+        # Content stays top-aligned: the pill cloud below Project varies in
+        # height per project, and centering would shift the whole card up
+        # and down on every selection change.
         box.set_vexpand(True)
-        box.set_valign(Gtk.Align.CENTER)
+        box.set_valign(Gtk.Align.START)
         content_wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         content_wrap.append(self.banner)
         content_wrap.append(box)
@@ -259,11 +326,15 @@ class LauncherWindow(Adw.ApplicationWindow):
         return False
 
     def _sync_sources(self):
-        from ..config import merge_remote_sources
+        from ..config import merge_remote_games, merge_remote_sources
 
         try:
             if merge_remote_sources(self.cfg, fetch_remote_sources(self.cfg)):
                 GLib.idle_add(self.reload_projects)
+        except Exception:
+            pass
+        try:
+            merge_remote_games(self.cfg, fetch_remote_games(self.cfg))
         except Exception:
             pass
 
@@ -331,8 +402,6 @@ class LauncherWindow(Adw.ApplicationWindow):
     def _build_menu(self):
         menu = Gio.Menu()
         menu.append("Settings", "win.settings")
-        menu.append("PR Builds...", "win.pr-builds")
-        menu.append("Open Data Folder", "win.folder")
         menu.append("About", "win.about")
         self._menu = menu
         self._menu_button.set_menu_model(menu)
@@ -519,20 +588,201 @@ class LauncherWindow(Adw.ApplicationWindow):
         else:
             self.version_row.set_subtitle("")
 
+    def _make_project_list_factory(self):
+        factory = Gtk.SignalListItemFactory()
+
+        def on_setup(_f, obj):
+            obj.set_child(Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END))
+
+        def on_bind(_f, obj):
+            label = obj.get_child()
+            text = obj.get_item().get_string()
+            if text == PROJECT_SEPARATOR:
+                label.set_text(text)
+                label.set_xalign(0.5)
+                label.add_css_class("dim-label")
+                return
+            fav_names = {
+                p.get("name", p.get("id")) for p in self.cfg.get("projects", []) if p.get("favorite")
+            }
+            label.set_text(f"★ {text}" if text in fav_names else text)
+            label.set_xalign(0)
+            label.remove_css_class("dim-label")
+
+        factory.connect("setup", on_setup)
+        factory.connect("bind", on_bind)
+        return factory
+
+    def _set_project_model(self):
+        """Rebuild the Project dropdown: favourites first, then a divider."""
+        favs = [p for p in self.cfg.get("projects", []) if p.get("favorite")]
+        rest = [p for p in self.cfg.get("projects", []) if not p.get("favorite")]
+        labels, ids = [], []
+        for p in favs:
+            labels.append(p.get("name", p.get("id")))
+            ids.append(p.get("id"))
+        if favs and rest:
+            labels.append(PROJECT_SEPARATOR)
+            ids.append(None)
+        for p in rest:
+            labels.append(p.get("name", p.get("id")))
+            ids.append(p.get("id"))
+        self._project_ids = ids
+        self.project_row.set_model(Gtk.StringList.new(labels))
+        cur = self.cfg.get("project")
+        if cur and cur in ids:
+            self.project_row.set_selected(ids.index(cur))
+        else:
+            self.project_row.set_selected(0 if not favs else ids.index(favs[0].get("id")))
+        self._last_project_idx = self.project_row.get_selected()
+
+    def _poll_external_changes(self):
+        """Pick up projects added or removed by another process/instance."""
+        if self.auto:
+            return False
+        try:
+            disk = load_config()
+            mine = [
+                (p.get("id"), p.get("name"), bool(p.get("favorite"))) for p in self.cfg.get("projects", [])
+            ]
+            theirs = [(p.get("id"), p.get("name"), bool(p.get("favorite"))) for p in disk.get("projects", [])]
+            if mine != theirs:
+                self.reload_projects()
+        except Exception:
+            pass
+        return True
+
     def _current_info(self):
-        ids = [pr.get("id") for pr in self.cfg.get("projects", [])]
+        ids = self._project_ids
         idx = self.project_row.get_selected()
         pid = ids[idx] if 0 <= idx < len(ids) else self.cfg.get("project")
+        if pid is None:
+            return {}
         return next((pr for pr in self.cfg.get("projects", []) if pr.get("id") == pid), {})
 
     def _release_available(self, info):
         plats = release_platforms(info)
         return plats["windows"] if is_windows() else plats["linux"]
 
+    @staticmethod
+    def _make_pill(label, tooltip_text):
+        """Small non-clickable badge; color is stable per label, not random."""
+        _ensure_pill_css()
+        pill = Gtk.Label(label=label)
+        pill.add_css_class("eglantine-pill")
+        pill.add_css_class(f"pill-tone-{sum(ord(c) for c in label) % _PILL_TONES}")
+        if tooltip_text:
+            pill.set_tooltip_text(tooltip_text)
+        return pill
+
+    @staticmethod
+    def _set_row_tooltip(row, text):
+        """Set the tooltip on a row and all its children.
+
+        Adw rows pack labels, boxes and buttons that swallow hover on their
+        own area, so setting it on the row alone only pops up over parts.
+        Walking the subtree makes hovering anywhere on the line show it.
+        """
+
+        def _apply(widget):
+            try:
+                widget.set_tooltip_text(text)
+            except Exception:
+                pass
+            child = widget.get_first_child()
+            while child is not None:
+                _apply(child)
+                child = child.get_next_sibling()
+
+        _apply(row)
+
+    def _update_star(self, info=None):
+        """Reflect the selected project's favourite state on the star."""
+        info = info if info is not None else self._current_info()
+        fav = bool(info.get("favorite"))
+        if fav:
+            self._star_label.add_css_class("fav-active")
+        else:
+            self._star_label.remove_css_class("fav-active")
+        self.star_btn.set_tooltip_text(
+            f"Unfavourite {info.get('name', '')}" if fav else f"Favourite {info.get('name', '')}"
+        )
+        self.star_btn.set_tooltip_text(
+            f"Unfavourite {info.get('name', '')}" if fav else f"Favourite {info.get('name', '')}"
+        )
+
+    def _on_star_clicked(self, *_args):
+        info = self._current_info()
+        if not info or not info.get("id"):
+            return
+        info["favorite"] = not info.get("favorite")
+        save_config(self.cfg)
+        self._updating = True
+        try:
+            self._set_project_model()
+        finally:
+            self._updating = False
+        self._save_choices()
+        self._update_project_row_meta()
+        self._refresh_versions()
+
+    def _update_project_row_meta(self):
+        info = self._current_info()
+        # Games only here; tags live as pills below with their own hovers.
+        tip = project_tooltip(info, include_tags=False)
+        try:
+            self._set_row_tooltip(self.project_row, tip)
+        except Exception:
+            pass
+        self._update_star(info)
+        flow = getattr(self, "tag_flow", None)
+        if flow is None:
+            return
+        child = flow.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            flow.remove(child)
+            child = nxt
+        pills = []
+        for item in effective_best_for(info):
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name") or item.get("title_id", "")
+            if not name:
+                continue
+            note = (item.get("note") or "").strip()
+            pills.append(self._make_pill(name, f"{name} - {note}" if note else name))
+        for tag in effective_tags(info):
+            if not isinstance(tag, dict):
+                continue
+            label = tag.get("label") or tag.get("id", "")
+            if not label:
+                continue
+            tag_tip = (tag.get("tooltip") or "").strip()
+            pills.append(self._make_pill(label, f"{label} - {tag_tip}" if tag_tip else label))
+        for pill in pills:
+            flow.append(pill)
+        flow.set_visible(bool(pills))
+
     def _on_selector_changed(self, *_args):
         if self._updating:
             return
+        idx = self.project_row.get_selected()
+        ids = self._project_ids
+        if 0 <= idx < len(ids) and ids[idx] is None:
+            # divider row picked: bounce straight back
+            self._updating = True
+            try:
+                self.project_row.set_selected(self._last_project_idx)
+            finally:
+                self._updating = False
+            return
+        self._last_project_idx = idx
         self._save_choices()
+        try:
+            self._update_project_row_meta()
+        except Exception:
+            pass
         self._refresh_versions()
 
     def _refresh_versions(self):
@@ -1174,11 +1424,6 @@ class LauncherWindow(Adw.ApplicationWindow):
             note = " (restart Steam to see changes)" if "steam" in changed else ""
             self._set_status(f"Shortcuts updated: {', '.join(sorted(changed))}.{note}")
 
-    def on_open_folder(self, *_args):
-        folder = Path(self.cfg["install_dir"])
-        folder.mkdir(parents=True, exist_ok=True)
-        subprocess.Popen(_on_host(["xdg-open", str(folder)]))
-
     def _show_deps_dialog(self, parent, text):
         DepsDialog(parent, text, on_ignore=self._limit_to_downloads).present()
         return False
@@ -1412,39 +1657,26 @@ class LauncherWindow(Adw.ApplicationWindow):
         return win
 
     def on_pr_builds(self, *_args):
-        PRBuildsDialog(self, on_changed=self.reload_projects, on_launch=self._launch_pr).present()
-
-    def _launch_pr(self, pid):
-        ids = [p.get("id") for p in self.cfg.get("projects", [])]
-        if pid not in ids:
-            self.cfg = load_config()
-            ids = [p.get("id") for p in self.cfg.get("projects", [])]
-        if pid in ids:
-            self._updating = True
-            try:
-                self.project_row.set_selected(ids.index(pid))
-            finally:
-                self._updating = False
-            self._save_choices()
-            self._refresh_versions()
-            self.on_launch()
+        win = self.on_settings()
+        if win is not None:
+            win.show_page("prs")
+        return win
 
     def reload_projects(self):
         # Settings saves a new config to disk; re-read it so toggles apply instantly
         self.cfg = load_config()
         self._updating = True
         try:
-            model = Gtk.StringList.new([p.get("name", p.get("id")) for p in self.cfg.get("projects", [])])
-            self.project_row.set_model(model)
-            ids = [p.get("id") for p in self.cfg.get("projects", [])]
-            self._project_ids = ids
-            cur = self.cfg.get("project")
-            if cur in ids:
-                self.project_row.set_selected(ids.index(cur))
-            else:
-                self.project_row.set_selected(0)
-                if ids:
-                    self.cfg["project"] = ids[0]
+            self._set_project_model()
+            if self.cfg.get("project") not in (self._project_ids or [None]):
+                first = next((i for i in self._project_ids if i is not None), None)
+                if first is not None:
+                    self.cfg["project"] = first
+                    self.project_row.set_selected(self._project_ids.index(first))
+            try:
+                self._update_project_row_meta()
+            except Exception:
+                pass
         finally:
             self._updating = False
         self._refresh_versions()
@@ -1454,11 +1686,20 @@ class LauncherWindow(Adw.ApplicationWindow):
             application_name="Eglantine Launcher",
             application_icon="eglantine-launcher",
             version=__version__,
-            comments="Simple launcher for Eglantine/PokeDinner. Checks for updates and builds from source.",
+            comments="Simple launcher for Eglantine and forks. Checks for updates and builds from source. "
+            "Default sources curated from the wichforks fork guide; game title IDs from Switchbrew.",
             website="https://github.com/SavageCore/eglantine-launcher",
             license_type=Gtk.License.GPL_3_0,
             copyright="© 2026 SavageCore",
             developers=["SavageCore"],
+        )
+        dialog.add_credit_section(
+            "Fork guide",
+            ["wichforks by riyadhHDA - https://github.com/riyadhHDA/wichforks"],
+        )
+        dialog.add_credit_section(
+            "Title IDs",
+            ["Switchbrew - https://switchbrew.org/wiki/Switch_2:_Title_list/Games"],
         )
         dialog.set_follows_content_size(True)
         dialog.present(self)
