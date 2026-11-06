@@ -83,6 +83,7 @@ GAMES = {
     "0400C3F00006E000": "Mario Kart World",
     "0400D4201C6EA000": "Mario Tennis Fever",
     "04008E001F098000": "Nintendo Switch Sports Resort",
+    "040032B023CA4000": "Orbitals",
     "0100F43008C44000": "Pokémon Legends: Z-A",
     "0400A3A01EE4C000": "Pokémon Pokopia",
     "0400921025B32000": "Sonic Frontiers Definitive Edition",
