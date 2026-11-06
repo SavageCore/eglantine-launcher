@@ -40,7 +40,11 @@ git rev-parse "v$V" >/dev/null 2>&1 && { echo "error: tag v$V already exists" >&
 
 sed -i "s/^__version__ = .*/__version__ = \"$V\"/" eglantine_launcher/__init__.py
 grep "^__version__ = \"$V\"$" eglantine_launcher/__init__.py
-git add eglantine_launcher/__init__.py
+# The About dialog shows the version, so its screenshots are part of the
+# release: retake them against the bumped tree and ship them in the
+# version commit (nothing else goes in with it).
+bash scripts/take-screenshots.sh about
+git add eglantine_launcher/__init__.py docs/screenshots/light/about.png docs/screenshots/dark/about.png
 git commit -m "$V"
 
 git push origin main

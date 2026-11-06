@@ -10,6 +10,23 @@ OUT="$ROOT/docs/screenshots"
 DISP=:99
 
 pages=(main settings settings_sources settings_games settings_pr_builds source_edit source_edit_storage source_edit_tags about)
+if [ $# -gt 0 ]; then
+  # e.g. `bash scripts/take-screenshots.sh about` captures one page only
+  # (used by the release script to refresh the version-stamped About shot).
+  wanted=("$@")
+  pages=()
+  for p in "${wanted[@]}"; do
+    found=""
+    for known in main settings settings_sources settings_games settings_pr_builds source_edit source_edit_storage source_edit_tags about; do
+      [ "$p" = "$known" ] && found=1 && break
+    done
+    if [ -z "$found" ]; then
+      echo "unknown page '$p'" >&2
+      exit 1
+    fi
+    pages+=("$p")
+  done
+fi
 flags_main=""
 flags_settings="--settings"
 flags_settings_sources="--settings --settings-page sources"

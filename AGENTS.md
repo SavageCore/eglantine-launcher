@@ -43,7 +43,10 @@ make release V=0.2.0  # explicit version (cannot combine with a bump type)
 ```
 
 `scripts/release.sh` requires main with a clean tree, runs `make check`,
-bumps `__version__` in `eglantine_launcher/__init__.py`, commits (message
-is the version only), pushes main, tags `v<version>`, and pushes the tag.
+bumps `__version__` in `eglantine_launcher/__init__.py`, retakes the About
+screenshots (the dialog shows the version, so they are part of the
+release), commits version + About shots (message is the version only),
+pushes main, tags `v<version>`, and pushes the tag.
 CI builds the release from the tag. Patch bumps are the norm here, even
-for feats.
+for feats. `bash scripts/take-screenshots.sh about` retakes just the
+About shots.
