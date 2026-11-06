@@ -65,6 +65,7 @@ from ..tasks import (
     UPDATE_COMMANDS,
     BuildCancelled,
     _in_flatpak,
+    api_get_json,
     build_source,
     build_windows_updater,
     check_build_deps,
@@ -1438,16 +1439,9 @@ class LauncherWindow(Adw.ApplicationWindow):
     def _start_self_update_check(self):
         def worker():
             try:
-                import json
-                import urllib.request
-
                 from .. import __version__
 
-                req = urllib.request.Request(
-                    LAUNCHER_API_LATEST, headers={"User-Agent": "eglantine-launcher"}
-                )
-                with urllib.request.urlopen(req, timeout=20) as r:
-                    data = json.loads(r.read())
+                data = api_get_json(LAUNCHER_API_LATEST, cfg=None, timeout=20)
                 tag = data.get("tag_name", "").lstrip("v")
                 if tag and tag != __version__ and tag > __version__:
                     self._launcher_update_url = data.get("html_url")

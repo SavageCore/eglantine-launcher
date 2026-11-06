@@ -4,6 +4,8 @@ import platform
 import shutil
 import subprocess
 import sys
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -16,6 +18,14 @@ from .config import config_dir as launcher_config_dir
 from .config import save as save_config
 
 _token_rejected = False
+
+# Central API throttle: every GitHub/Forgejo JSON call goes through
+# api_get_json(), which spaces requests per host so parallel bursts
+# (e.g. per-branch lookups) cannot spam the API.
+_api_lock = threading.Lock()
+_last_api_time: dict[str, float] = {}
+_API_MIN_INTERVAL_DEFAULT = 0.4
+_API_RATE_LIMIT_MAX_WAIT = 60.0
 
 
 class BuildCancelled(RuntimeError):
@@ -31,13 +41,101 @@ def _api_headers(cfg=None):
     return headers
 
 
+def _api_host(url):
+    """Hostname bucket for throttling; unknown URLs share a default bucket."""
+    try:
+        host = urllib.parse.urlsplit(url).hostname
+        return host.lower() if host else "default"
+    except Exception:
+        return "default"
+
+
+def _api_min_interval():
+    try:
+        return max(0.0, float(os.environ.get("EGLANTINE_API_MIN_INTERVAL", _API_MIN_INTERVAL_DEFAULT)))
+    except Exception:
+        return _API_MIN_INTERVAL_DEFAULT
+
+
+def _reset_api_throttle():
+    """Clear throttle state (tests)."""
+    with _api_lock:
+        _last_api_time.clear()
+
+
+def _throttle_api(url):
+    """Sleep so calls to the same host are spaced by the min interval."""
+    interval = _api_min_interval()
+    if interval <= 0:
+        return
+    host = _api_host(url)
+    with _api_lock:
+        now = time.monotonic()
+        wait = interval - (now - _last_api_time.get(host, 0.0))
+        if wait > 0:
+            time.sleep(wait)
+            now = time.monotonic()
+        _last_api_time[host] = now
+
+
+def _http_error_headers(e):
+    try:
+        headers = getattr(e, "headers", None) or getattr(e, "hdrs", None)
+        if headers is None:
+            return {}
+        if hasattr(headers, "items"):
+            return {str(k).lower(): str(v) for k, v in headers.items()}
+        return {}
+    except Exception:
+        return {}
+
+
+def _rate_limit_delay(e):
+    """Seconds to wait before retrying a 403/429, or 0 for no retry."""
+    headers = _http_error_headers(e)
+    try:
+        retry_after = float(headers.get("retry-after", ""))
+        if retry_after > 0:
+            return min(retry_after, _API_RATE_LIMIT_MAX_WAIT)
+    except Exception:
+        pass
+    if headers.get("x-ratelimit-remaining") == "0" and headers.get("x-ratelimit-reset"):
+        try:
+            wait = float(headers["x-ratelimit-reset"]) - time.time() + 1.0
+            if wait > 0:
+                return min(wait, _API_RATE_LIMIT_MAX_WAIT)
+        except Exception:
+            pass
+    if getattr(e, "code", None) == 429:
+        return 2.0
+    return 0.0
+
+
+def _open_json(req, timeout):
+    _throttle_api(req.full_url)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
 def api_get_json(url, cfg=None, timeout=30):
-    """GET JSON, falling back to anonymous if the token is rejected (401)."""
+    """GET JSON via the central throttled path.
+
+    All GitHub/Forgejo API reads must go through here so bursts are
+    spaced per host. Retries once after a 429/rate-limit response,
+    then falls back to anonymous on a rejected token (401).
+    """
     global _token_rejected
     req = urllib.request.Request(url, headers=_api_headers(cfg))
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read())
+        try:
+            return _open_json(req, timeout)
+        except urllib.error.HTTPError as e:
+            if getattr(e, "code", None) in (403, 429):
+                wait = _rate_limit_delay(e)
+                if wait > 0:
+                    time.sleep(wait)
+                    return _open_json(req, timeout)
+            raise
     except urllib.error.HTTPError as e:
         if e.code != 401 or _token_rejected or "Authorization" not in dict(req.header_items()):
             raise
@@ -60,8 +158,7 @@ def api_get_json(url, cfg=None, timeout=30):
         except Exception:
             pass
         req = urllib.request.Request(url, headers=_api_headers(cfg))
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read())
+        return _open_json(req, timeout)
 
 
 def token_accepted():
@@ -563,11 +660,12 @@ def sort_branch_names(names, dates=None, default=None):
     return ordered
 
 
-def fetch_github_branch_dates(source_url, branches, cfg=None, max_workers=8, limit=500):
+def fetch_github_branch_dates(source_url, branches, cfg=None, max_workers=4, limit=500):
     """Map branch name -> commit datetime for github repos.
 
-    One small commit lookup per branch. Failures are skipped so callers
-    always get a partial dict, never an exception.
+    One small commit lookup per branch, all via the central throttled
+    api_get_json() so the burst is spaced per host. Failures are
+    skipped so callers always get a partial dict, never an exception.
     """
     host, owner, repo = parse_repo(source_url)
     if host != "github" or not owner or not repo:
@@ -788,6 +886,7 @@ def find_asset(tag, assets, pgo):
 
 
 def download(url, dest, progress_cb=None):
+    """Download a release artifact. Binary DLs bypass the API throttle."""
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
@@ -2500,7 +2599,7 @@ def self_update_dialog_text(method, tag):
 
 
 def download_url(url, dest, progress_cb=None, timeout=120):
-    """Download url to dest (Path). progress_cb, if given, gets a 0-1 float."""
+    """Download url to dest (Path). Binary DLs bypass the API throttle."""
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     req = urllib.request.Request(url, headers={"User-Agent": "eglantine-launcher"})

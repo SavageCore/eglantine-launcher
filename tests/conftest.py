@@ -42,6 +42,18 @@ def patch_urlopen(monkeypatch):
     return _patch
 
 
+@pytest.fixture(autouse=True)
+def no_api_throttle(monkeypatch):
+    """Keep mocked API tests fast; throttle behavior has its own tests."""
+    monkeypatch.setenv("EGLANTINE_API_MIN_INTERVAL", "0")
+    try:
+        from eglantine_launcher import tasks
+
+        tasks._reset_api_throttle()
+    except Exception:
+        pass
+
+
 @pytest.fixture()
 def needs_display():
     if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
