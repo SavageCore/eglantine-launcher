@@ -403,6 +403,73 @@ def test_migrate_links_known_homes_for_all_projects(fake_home):
     assert (home / "eglantine").is_dir()
 
 
+def test_canonicalize_rewrites_legacy_data_paths(fake_home):
+    config = fake_home / ".config" / "eglantine-launcher" / "sources" / "x" / "eglantine"
+    config.mkdir(parents=True)
+    old = str(fake_home / ".local" / "share" / "eden")
+    new = str(fake_home / ".local" / "share" / "eglantine")
+    (config / "qt-config.ini").write_text(
+        "\n".join(
+            [
+                "nand_directory=" + old + "/nand",
+                "nand_directory\\default=false",
+                "sdmc_directory=" + old + "/sdmc",
+                "screenshot_path=" + old + "/screenshots",
+                "screenshot_path\\default=true",
+                "save_directory=/mnt/bigdrive/saves",
+                "romsPath=" + old + "/roms",
+                "",
+            ]
+        )
+    )
+
+    tasks.canonicalize_emulator_config_paths([config])
+
+    text = (config / "qt-config.ini").read_text()
+    assert "nand_directory=" + new + "/nand" in text
+    assert "nand_directory\\default=false" in text
+    assert "sdmc_directory=" + new + "/sdmc" in text
+    assert "screenshot_path=" + new + "/screenshots" in text
+    # Custom locations elsewhere and unrelated keys are never touched.
+    assert "save_directory=/mnt/bigdrive/saves" in text
+    assert "romsPath=" + old + "/roms" in text
+    # Second run changes nothing further.
+    before = text
+    tasks.canonicalize_emulator_config_paths([config])
+    assert (config / "qt-config.ini").read_text() == before
+
+
+def test_canonicalize_missing_config_is_a_noop(fake_home, tmp_path):
+    tasks.canonicalize_emulator_config_paths([tmp_path / "nope"])
+    tasks.canonicalize_emulator_config_paths([])
+
+
+def test_migrate_rewrites_legacy_spellings_in_source_configs(fake_home):
+    old = str(fake_home / ".local" / "share" / "eden")
+    new = str(fake_home / ".local" / "share" / "eglantine")
+    cfg = {"projects": [{"id": "p", "source_url": "https://github.com/o/r.git"}]}
+    home = tasks.source_config_home(cfg["projects"][0])
+    (home / "eglantine").mkdir(parents=True)
+    (home / "eglantine" / "qt-config.ini").write_text("nand_directory=" + old + "/nand\n")
+
+    tasks.migrate_emulator_dirs(cfg)
+
+    assert (home / "eglantine" / "qt-config.ini").read_text() == "nand_directory=" + new + "/nand\n"
+
+
+def test_seed_canonicalizes_copied_legacy_config(fake_home):
+    old = str(fake_home / ".local" / "share" / "eden")
+    new = str(fake_home / ".local" / "share" / "eglantine")
+    legacy = fake_home / ".config" / "eden"
+    legacy.mkdir(parents=True)
+    (legacy / "qt-config.ini").write_text("sdmc_directory=" + old + "/sdmc\n")
+    cfg = {"projects": [{"id": "p", "source_url": "https://github.com/o/r.git"}]}
+
+    home = tasks.seed_source_config(cfg, cfg["projects"][0])
+
+    assert (home / "eglantine" / "qt-config.ini").read_text() == "sdmc_directory=" + new + "/sdmc\n"
+
+
 def test_format_backup_name_localizes_utc():
     text = tasks.format_backup_name("2026-11-04T19-26-07Z")
     assert "2026" in text

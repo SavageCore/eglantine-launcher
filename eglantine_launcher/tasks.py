@@ -1520,12 +1520,17 @@ def migrate_emulator_dirs(cfg=None):
 
     Links legacy/fork names to ``eglantine`` for global saves and every
     known per-source config home (existing homes only; new ones are linked
-    by seed_source_config at first launch). Never raises.
+    by seed_source_config at first launch), then rewrites legacy data-dir
+    spellings inside the emulator configs to match. Never raises.
     """
     try:
         if is_windows():
             return
         ensure_emulator_dir_links(_data_home())
+        config_dirs = [
+            launcher_config_dir().parent / EMULATOR_CONFIG_DIR,
+            *(launcher_config_dir().parent / alias for alias in EMULATOR_DIR_ALIASES),
+        ]
         projects = (cfg or {}).get("projects", []) if isinstance(cfg, dict) else []
         seen = set()
         for info in projects:
@@ -1539,8 +1544,58 @@ def migrate_emulator_dirs(cfg=None):
             try:
                 if home.is_dir():
                     ensure_emulator_dir_links(home)
+                    config_dirs.append(home / EMULATOR_CONFIG_DIR)
             except OSError:
                 continue
+        canonicalize_emulator_config_paths(config_dirs)
+    except Exception:
+        pass
+
+
+# qt-config.ini keys whose default lives under the emulator data dir. A value
+# spelling the legacy tree is rewritten to the canonical one (identical
+# target through the symlink); custom locations elsewhere are never touched.
+EMULATOR_DATA_PATH_KEYS = (
+    "nand_directory",
+    "sdmc_directory",
+    "load_directory",
+    "dump_directory",
+    "tas_directory",
+    "save_directory",
+    "screenshot_path",
+)
+
+
+def canonicalize_emulator_config_paths(config_dirs):
+    """Point legacy data-dir spellings at the canonical dir in emulator configs.
+
+    Only rewrites values inside the old ``$XDG_DATA_HOME/eden`` tree (e.g. a
+    custom NAND path saved when ``eden`` was canonical); a NAND on another
+    drive keeps working untouched. Never raises.
+    """
+    try:
+        old_prefix = str(_data_home() / "eden") + "/"
+        new_prefix = str(_data_home() / EMULATOR_CONFIG_DIR) + "/"
+        for config_dir in config_dirs:
+            try:
+                ini = Path(config_dir) / "qt-config.ini"
+                text = ini.read_text()
+            except OSError:
+                continue
+            lines = text.split("\n")
+            changed = False
+            for i, line in enumerate(lines):
+                key, sep, value = line.partition("=")
+                if not sep or key not in EMULATOR_DATA_PATH_KEYS:
+                    continue
+                if value.startswith(old_prefix):
+                    lines[i] = key + "=" + new_prefix + value[len(old_prefix) :]
+                    changed = True
+            if changed:
+                try:
+                    ini.write_text("\n".join(lines))
+                except OSError:
+                    continue
     except Exception:
         pass
 
@@ -1706,6 +1761,7 @@ def seed_source_config(cfg, info):
                 if legacy.is_dir():
                     shutil.copytree(legacy, dst, dirs_exist_ok=True)
                     break
+        canonicalize_emulator_config_paths([dst])
     except OSError:
         pass
     try:
