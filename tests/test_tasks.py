@@ -468,6 +468,60 @@ def test_api_get_json_skips_flag_for_env_or_throwaway_cfg(monkeypatch, fake_home
     tasks.token_accepted()
 
 
+def test_api_get_json_rate_limit_fails_fast(monkeypatch):
+    """An exhausted primary budget must raise, never sleep until reset."""
+    import time
+    import urllib.error
+    import urllib.request
+
+    import eglantine_launcher.tasks as tasks
+
+    tasks._token_rejected = False
+    tasks._reset_api_throttle()
+    calls = []
+
+    def fake(url_or_req, timeout=None):
+        calls.append(1)
+        raise urllib.error.HTTPError(
+            str(url_or_req.full_url),
+            403,
+            "rate limit exceeded",
+            {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(int(time.time()) + 3600)},
+            None,
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    start = time.monotonic()
+    with pytest.raises(urllib.error.HTTPError):
+        tasks.api_get_json("https://api.github.com/repos/o/r", None, timeout=5)
+    assert time.monotonic() - start < 5
+    assert len(calls) == 1
+
+
+def test_api_throttle_spaces_same_host_calls(monkeypatch):
+    import urllib.request
+
+    from conftest import FakeResponse
+
+    import eglantine_launcher.tasks as tasks
+
+    monkeypatch.setenv("EGLANTINE_API_MIN_INTERVAL", "0.2")
+    tasks._reset_api_throttle()
+    seen = []
+
+    def fake(url_or_req, timeout=None):
+        import time
+
+        seen.append(time.monotonic())
+        return FakeResponse({"ok": True})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    tasks.api_get_json("https://api.github.com/a", None, timeout=5)
+    tasks.api_get_json("https://api.github.com/b", None, timeout=5)
+    assert seen[1] - seen[0] >= 0.15
+    tasks._reset_api_throttle()
+
+
 def test_merge_remote_sources_adds_and_updates(fake_home):
     from eglantine_launcher.config import merge_remote_sources
 

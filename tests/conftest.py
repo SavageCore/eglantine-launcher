@@ -54,6 +54,24 @@ def no_api_throttle(monkeypatch):
         pass
 
 
+@pytest.fixture(autouse=True)
+def no_real_network(monkeypatch):
+    """Hermetic suite: real HTTP is blocked unless a test installs its own fake.
+
+    Several GUI tests never mock urlopen, so LauncherWindow's background
+    refreshes used to hit the live GitHub/Forgejo APIs - slow, flaky, and
+    burning the shared anonymous rate budget. Autouse fixtures run before
+    explicitly requested ones, so patch_urlopen and direct monkeypatching
+    in test bodies still win.
+    """
+    import urllib.error
+
+    def _blocked(url_or_req, timeout=None):
+        raise urllib.error.URLError("network disabled in tests")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _blocked)
+
+
 @pytest.fixture()
 def needs_display():
     if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):

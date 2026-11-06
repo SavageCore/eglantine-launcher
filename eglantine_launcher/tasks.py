@@ -25,7 +25,11 @@ _token_rejected = False
 _api_lock = threading.Lock()
 _last_api_time: dict[str, float] = {}
 _API_MIN_INTERVAL_DEFAULT = 0.4
-_API_RATE_LIMIT_MAX_WAIT = 60.0
+# Server-side rate limits must fail fast: callers already fall back to
+# cached data, and sleeping here would stall workers (and the suite)
+# for up to a minute per call. Only an explicit Retry-After is honored,
+# bounded so one unlucky response cannot freeze a refresh.
+_API_RATE_LIMIT_MAX_WAIT = 10.0
 
 
 class BuildCancelled(RuntimeError):
@@ -91,7 +95,12 @@ def _http_error_headers(e):
 
 
 def _rate_limit_delay(e):
-    """Seconds to wait before retrying a 403/429, or 0 for no retry."""
+    """Seconds to wait before retrying a 403/429, or 0 to fail fast.
+
+    Only an explicit Retry-After (or a bare 429) waits, and only briefly.
+    An exhausted primary budget (X-RateLimit-Reset, up to an hour away)
+    never sleeps: callers fall back to cached data instead.
+    """
     headers = _http_error_headers(e)
     try:
         retry_after = float(headers.get("retry-after", ""))
@@ -99,13 +108,6 @@ def _rate_limit_delay(e):
             return min(retry_after, _API_RATE_LIMIT_MAX_WAIT)
     except Exception:
         pass
-    if headers.get("x-ratelimit-remaining") == "0" and headers.get("x-ratelimit-reset"):
-        try:
-            wait = float(headers["x-ratelimit-reset"]) - time.time() + 1.0
-            if wait > 0:
-                return min(wait, _API_RATE_LIMIT_MAX_WAIT)
-        except Exception:
-            pass
     if getattr(e, "code", None) == 429:
         return 2.0
     return 0.0
