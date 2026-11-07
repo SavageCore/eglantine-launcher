@@ -65,6 +65,22 @@ def test_demo_build_log_fills_log(needs_display, fake_home):
         assert "Building" in window.status_label.get_label()
         assert window.progress.get_visible() is True
         assert window.stop_btn.get_visible() is True
+        assert window.log_panel.get_visible() is True
+    finally:
+        window.close()
+
+
+def test_log_panel_hidden_until_build_output(needs_display, fake_home, monkeypatch):
+    from gi.repository import GLib
+
+    window = LauncherWindow(_make_app())
+    try:
+        assert window.log_panel.get_visible() is False
+        assert window.status_label.get_parent() is not window.log_panel
+        monkeypatch.setattr(GLib, "idle_add", lambda fn, *a, **k: fn(*a))
+        window._append_log("[1/10] Building...")
+        assert window.log_panel.get_visible() is True
+        assert window.copy_btn.get_visible() is True
     finally:
         window.close()
 
@@ -123,7 +139,7 @@ def test_main_window_restores_saved_size(needs_display, fake_home, monkeypatch):
     app = _make_app()
     window = LauncherWindow(app)
     try:
-        assert window.get_default_size() == (1280, 620)
+        assert window.get_default_size() == (600, 620)
         monkeypatch.setattr(window, "get_width", lambda: 500)
         monkeypatch.setattr(window, "get_height", lambda: 650)
         window._save_window_size()

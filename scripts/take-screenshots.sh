@@ -9,7 +9,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="$ROOT/docs/screenshots"
 DISP=:99
 
-pages=(main settings settings_github settings_backups settings_sources settings_games settings_pr_builds source_edit source_edit_storage source_edit_tags about)
+pages=(main main_build settings settings_github settings_backups settings_sources settings_games settings_pr_builds source_edit source_edit_storage source_edit_tags about)
 if [ $# -gt 0 ]; then
   # e.g. `bash scripts/take-screenshots.sh about` captures one page only
   # (used by the release script to refresh the version-stamped About shot).
@@ -17,7 +17,7 @@ if [ $# -gt 0 ]; then
   pages=()
   for p in "${wanted[@]}"; do
     found=""
-    for known in main settings settings_github settings_backups settings_sources settings_games settings_pr_builds source_edit source_edit_storage source_edit_tags about; do
+    for known in main main_build settings settings_github settings_backups settings_sources settings_games settings_pr_builds source_edit source_edit_storage source_edit_tags about; do
       [ "$p" = "$known" ] && found=1 && break
     done
     if [ -z "$found" ]; then
@@ -27,7 +27,8 @@ if [ $# -gt 0 ]; then
     pages+=("$p")
   done
 fi
-flags_main="--demo-build-log"
+flags_main=""
+flags_main_build="--demo-build-log"
 flags_settings="--settings"
 flags_settings_github="--settings --settings-page github"
 flags_settings_backups="--settings --settings-page backups"
@@ -39,6 +40,7 @@ flags_source_edit_storage="--edit-source --edit-source-tab storage"
 flags_source_edit_tags="--edit-source --edit-source-tab tags"
 flags_about="--about"
 titles_main="Eglantine Launcher"
+titles_main_build="Eglantine Launcher"
 titles_settings="Settings"
 titles_settings_github="Settings"
 titles_settings_backups="Settings"
@@ -72,7 +74,7 @@ pkill -f "eglantine_launcher --color-scheme" 2>/dev/null || true
 # fresh X server so the desktop, theme and window size are deterministic.
 # xkbcomp prints scary-but-harmless warnings on startup; keep them in a log.
 XVFB_LOG="$(mktemp)"
-Xvfb $DISP -screen 0 1280x900x24 2>"$XVFB_LOG" &
+Xvfb $DISP -screen 0 1920x1080x24 2>"$XVFB_LOG" &
 XVFB_PID=$!
 trap 'kill $XVFB_PID 2>/dev/null; rm -rf "$SHOT_HOME" "$XVFB_LOG"' EXIT
 sleep 1
@@ -157,7 +159,7 @@ import json
 from pathlib import Path
 cfg = Path("$SHOT_HOME") / ".config" / "eglantine-launcher" / "config.json"
 data = json.loads(cfg.read_text()) if cfg.exists() else {}
-data["window_width"], data["window_height"] = 1280, 760
+data["window_width"], data["window_height"] = 600, 760
 cfg.parent.mkdir(parents=True, exist_ok=True)
 cfg.write_text(json.dumps(data))
 EOF

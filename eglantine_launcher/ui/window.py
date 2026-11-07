@@ -137,13 +137,14 @@ class LauncherWindow(Adw.ApplicationWindow):
         # become links to the canonical one so saves stay global.
         migrate_emulator_dirs(self.cfg)
         try:
-            win_w = int(self.cfg.get("window_width") or 1280)
+            win_w = int(self.cfg.get("window_width") or 600)
             win_h = self.cfg.get("window_height")
             win_h = int(win_h) if win_h else 620
         except (TypeError, ValueError):
-            win_w, win_h = 1280, 620
-        # Side-by-side layout needs width: clamp older saved sizes up.
-        win_w = max(win_w, 1100)
+            win_w, win_h = 600, 620
+        # Fresh launches stay narrow: the log panel is hidden until a
+        # source build emits output, and showing it widens the window then.
+        win_w = min(max(win_w, 520), 640)
         self.set_default_size(win_w, win_h)
         self.auto = auto
         self._busy = False
@@ -181,7 +182,7 @@ class LauncherWindow(Adw.ApplicationWindow):
 
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         left.set_size_request(420, -1)
-        left.set_hexpand(False)
+        left.set_hexpand(True)
         left.set_vexpand(True)
         left.set_valign(Gtk.Align.START)
 
@@ -299,7 +300,6 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.shortcut_btn = Gtk.Button(label="Shortcuts...")
         self.shortcut_btn.connect("clicked", self.on_shortcuts_clicked)
 
-        self.action_row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         btn_row.set_valign(Gtk.Align.CENTER)
         btn_row.append(self.shortcut_btn)
@@ -309,16 +309,27 @@ class LauncherWindow(Adw.ApplicationWindow):
         # Stop then Launch keeps Launch rightmost as the primary action.
         btn_row.append(self.stop_btn)
         btn_row.append(self.launch_btn)
-        self.action_row.append(btn_row)
-        self.action_row.append(self.progress)
-        left.append(self.action_row)
+        left.append(btn_row)
 
-        # Right column: always-visible build log with a single status line.
-        # Transient statuses replace each other here instead of stacking
-        # as toasts over the log.
+        # Single-line status under the progress bar: transient messages
+        # replace each other here so they never stack up and cover content.
+        self.status_label = Gtk.Label(label="")
+        self.status_label.set_halign(Gtk.Align.START)
+        self.status_label.set_valign(Gtk.Align.CENTER)
+        self.status_label.set_hexpand(True)
+        self.status_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.status_label.add_css_class("dim-label")
+        self.status_label.set_visible(False)
+        left.append(self.status_label)
+
+        # Right column: build log, hidden unless a build emits output.
+        # Download users never see it; source builds reveal it on the
+        # first log line and widen the window to fit.
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         right.set_hexpand(True)
         right.set_vexpand(True)
+        right.set_visible(False)
+        self.log_panel = right
 
         self.log_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self.log_title = Gtk.Label(label="Build log")
@@ -341,15 +352,6 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.log_row.append(self.copy_btn)
         right.append(self.log_row)
 
-        self.status_label = Gtk.Label(label="")
-        self.status_label.set_halign(Gtk.Align.START)
-        self.status_label.set_valign(Gtk.Align.CENTER)
-        self.status_label.set_hexpand(True)
-        self.status_label.set_ellipsize(Pango.EllipsizeMode.END)
-        self.status_label.add_css_class("dim-label")
-        self.status_label.set_visible(False)
-        right.append(self.status_label)
-
         self.log_view = Gtk.TextView()
         self.log_view.set_editable(False)
         self.log_view.set_monospace(True)
@@ -363,14 +365,19 @@ class LauncherWindow(Adw.ApplicationWindow):
         # Size the log to a terminal-like width: classic terminals are
         # 80 columns, modern ones usually 100-120. Target 100 monospace
         # "M"s so typical build lines fit without horizontal scrolling.
+        # Capped so the window still fits on a 1080p screen (and the
+        # screenshot Xvfb display) even with large fonts.
         try:
             _layout = self.log_view.create_pango_layout("M" * 100)
             _lw, _lh = _layout.get_pixel_size()
-            self.log_scrolled.set_min_content_width(_lw + 24)
+            self.log_scrolled.set_min_content_width(min(_lw + 24, 1050))
         except Exception:
             self.log_scrolled.set_min_content_width(760)
 
         right.append(self.log_scrolled)
+        # Progress lives with the build output, full panel width, instead
+        # of crowding the settings side.
+        right.append(self.progress)
 
         main = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         main.set_margin_top(12)
@@ -390,7 +397,8 @@ class LauncherWindow(Adw.ApplicationWindow):
         self._schedule_lto_probe()
 
         # Banner sits edge-to-edge above the margined content; transient
-        # statuses show as a single line above the log, never covering it.
+        # statuses show as a single line under the progress bar, never
+        # covering anything.
         # Left column stays top-aligned: the pill cloud below Project varies
         # in height per project, and centering would shift the whole card up
         # and down on every selection change.
@@ -430,6 +438,8 @@ class LauncherWindow(Adw.ApplicationWindow):
         ]
         self.log_view.get_buffer().set_text("\n".join(lines) + "\n")
         self._log_has_content = True
+        self.log_panel.set_visible(True)
+        self.set_default_size(1280, 620)
         self.copy_btn.set_visible(True)
         status = "Building (this may take a while)..."
         self.status_label.set_text(status)
@@ -588,6 +598,14 @@ class LauncherWindow(Adw.ApplicationWindow):
                 buf.set_text("")
                 self._log_has_content = True
                 self.copy_btn.set_visible(True)
+                # First build output: reveal the side panel and widen
+                # the window to fit it. Download runs never get here.
+                self.log_panel.set_visible(True)
+                try:
+                    height = self.get_height()
+                except Exception:
+                    height = 0
+                self.set_default_size(1280, height if height > 0 else 620)
             buf.insert(buf.get_end_iter(), line + "\n")
             # scroll to end
             mark = buf.get_insert()
@@ -1294,11 +1312,19 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.progress.set_fraction(0.0)
         GLib.idle_add(self.progress.set_visible, True)
         self._last_fraction_time = 0.0
-        # clear log but keep the side panel visible (option a)
+        # clear log and hide the side panel: download runs stay narrow,
+        # source builds reveal it again on the first log line
         self.log_view.get_buffer().set_text("")
         self._log_has_content = False
+        self.log_panel.set_visible(False)
+        try:
+            height = self.get_height()
+        except Exception:
+            height = 0
+        self.set_default_size(600, height if height > 0 else 620)
         GLib.idle_add(self.copy_btn.set_visible, False)
         GLib.idle_add(self.build_timer_label.set_visible, False)
+        GLib.idle_add(self._hide_status_label)
         is_source = getattr(self, "_launch_mode", self.cfg.get("mode", "release")) != "release"
         GLib.idle_add(self.stop_btn.set_visible, is_source)
         GLib.idle_add(self.stop_btn.set_sensitive, True)
