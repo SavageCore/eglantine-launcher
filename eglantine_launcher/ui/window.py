@@ -71,6 +71,7 @@ from ..tasks import (
     build_windows_updater,
     check_build_deps,
     check_release,
+    describe_lto_support,
     detect_install_method,
     download_url,
     fetch_pr_info,
@@ -334,9 +335,11 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.action_bar.pack_end(self.launch_btn)
 
         # persist pgo/lto/cpu choices immediately (project/mode persist via _on_selector_changed)
-        self.pgo_row.connect("notify::active", lambda *_: self._save_choices())
+        self.pgo_row.connect("notify::active", self._on_pgo_toggled)
         self.lto_row.connect("notify::active", lambda *_: self._save_choices())
         self.cpu_row.connect("notify::selected", lambda *_: self._save_choices())
+        self._lto_probe_seq = 0
+        self._schedule_lto_probe()
 
         # Banner sits edge-to-edge above the margined content; toasts
         # overlay everything transiently; Launch lives in a proper
@@ -1073,7 +1076,8 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.cfg["project"] = info.get("id", self.cfg.get("project"))
         self.cfg["mode"] = self._mode_from_row()
         self.cfg["pgo"] = bool(self.pgo_row.get_active())
-        self.cfg["lto"] = bool(self.lto_row.get_active())
+        if self.lto_row.get_sensitive():
+            self.cfg["lto"] = bool(self.lto_row.get_active())
         try:
             self.cfg["cpu_level"] = self._cpu_values[int(self.cpu_row.get_selected())]
         except Exception:
@@ -1709,12 +1713,47 @@ class LauncherWindow(Adw.ApplicationWindow):
             # persist only the explicit choice; never flip it due to a failed release check
             self.cfg["mode"] = self._mode_from_row()
         self.cfg["pgo"] = bool(self.pgo_row.get_active())
-        self.cfg["lto"] = bool(self.lto_row.get_active())
+        if self.lto_row.get_sensitive():
+            self.cfg["lto"] = bool(self.lto_row.get_active())
         try:
             self.cfg["cpu_level"] = self._cpu_values[int(self.cpu_row.get_selected())]
         except Exception:
             self.cfg["cpu_level"] = "auto"
         save_config(self.cfg)
+
+    def _on_pgo_toggled(self, *_args):
+        # The PGO compiler may differ from the system one, so LTO support
+        # is re-probed whenever this flips.
+        self._save_choices()
+        self._schedule_lto_probe()
+
+    def _schedule_lto_probe(self):
+        self._lto_probe_seq = getattr(self, "_lto_probe_seq", 0) + 1
+        seq = self._lto_probe_seq
+        threading.Thread(target=self._probe_lto_support, args=(seq,), daemon=True).start()
+
+    def _probe_lto_support(self, seq):
+        try:
+            ok, reason = describe_lto_support(self.cfg)
+        except Exception as e:
+            ok, reason = False, f"LTO probe failed: {e}"
+        GLib.idle_add(self._apply_lto_support, seq, ok, reason)
+
+    def _apply_lto_support(self, seq, ok, reason):
+        try:
+            if seq != getattr(self, "_lto_probe_seq", 0):
+                return False
+            self.lto_row.set_sensitive(ok)
+            if ok:
+                self.lto_row.set_subtitle("Link-time optimization: faster binary, slower build")
+                self.lto_row.set_active(bool(self.cfg.get("lto", True)))
+            else:
+                self.lto_row.set_subtitle("Unavailable: toolchain cannot link LTO objects")
+                self.lto_row.set_active(False)
+            self._set_row_tooltip(self.lto_row, reason)
+        except Exception:
+            pass
+        return False
 
     def on_settings(self, *_args):
         win = SettingsWindow(self, on_changed=self.reload_projects)

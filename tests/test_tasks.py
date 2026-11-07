@@ -541,6 +541,46 @@ def test_lto_flag_matches_compiler(monkeypatch):
     assert tasks._lto_flag("g++") == "-flto"
 
 
+def test_describe_lto_support_ok(monkeypatch):
+    import eglantine_launcher.tasks as tasks
+
+    monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: ("/opt/clang", "/opt/clang++"))
+    monkeypatch.setattr(tasks, "first_working_lto_linker", lambda cc, cxx: "/usr/bin/ld.lld")
+    ok, reason = tasks.describe_lto_support({"pgo": True})
+    assert ok is True
+    assert "/usr/bin/ld.lld" in reason
+
+
+def test_describe_lto_support_falls_back_to_system_compiler(monkeypatch):
+    import eglantine_launcher.tasks as tasks
+
+    seen = {}
+    monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: (None, None))
+    monkeypatch.setattr(tasks, "_host_which", lambda name: {"g++": "/usr/bin/g++"}.get(name))
+
+    def fake_first(cc, cxx):
+        seen["cxx"] = cxx
+        return ""
+
+    monkeypatch.setattr(tasks, "first_working_lto_linker", fake_first)
+    ok, reason = tasks.describe_lto_support({"pgo": False})
+    assert ok is True
+    assert seen["cxx"] == "/usr/bin/g++"
+    assert "default linker" in reason
+
+
+def test_describe_lto_support_unavailable(monkeypatch):
+    import eglantine_launcher.tasks as tasks
+
+    monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: ("/opt/clang", "/opt/clang++"))
+    monkeypatch.setattr(tasks, "first_working_lto_linker", lambda cc, cxx: None)
+    monkeypatch.setattr(tasks, "_linker_candidates", lambda cxx: ["/usr/bin/ld.lld"])
+    ok, reason = tasks.describe_lto_support({"pgo": True})
+    assert ok is False
+    assert "/usr/bin/ld.lld" in reason
+    assert "mold" in reason
+
+
 def test_build_source_cancelled_before_configure(monkeypatch, tmp_path, fake_home):
     import pytest
 

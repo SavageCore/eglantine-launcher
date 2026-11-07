@@ -20,6 +20,24 @@ def _make_app():
     )
 
 
+def test_lto_row_greyed_out_with_reason_when_toolchain_cannot_link(needs_display, fake_home, monkeypatch):
+    import eglantine_launcher.ui.window as window_mod
+
+    monkeypatch.setattr(window_mod, "describe_lto_support", lambda cfg: (False, "no linker links LTO here"))
+    window = LauncherWindow(_make_app())
+    try:
+        window._lto_probe_seq += 1  # invalidate the startup probe
+        window._apply_lto_support(window._lto_probe_seq, False, "no linker links LTO here")
+        assert window.lto_row.get_sensitive() is False
+        assert window.lto_row.get_active() is False
+        assert window.lto_row.get_tooltip_text() == "no linker links LTO here"
+        window._apply_lto_support(window._lto_probe_seq, True, "LTO links with mold")
+        assert window.lto_row.get_sensitive() is True
+        assert window.lto_row.get_tooltip_text() == "LTO links with mold"
+    finally:
+        window.close()
+
+
 def test_main_window_has_content(needs_display, fake_home):
     app = _make_app()
     window = LauncherWindow(app)

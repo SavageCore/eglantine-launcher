@@ -2518,17 +2518,48 @@ def pick_build_linker(cc, cxx, want_lto=False):
     """
     cands = _linker_candidates(cxx)
     if want_lto:
-        lto = _lto_flag(cxx)
-        for ld in cands:
-            if _link_accepts(cc, lto, f"-fuse-ld={ld}"):
-                return _fuse_ld_args(ld), True
-        if _link_accepts(cc, lto):
-            return [], True
-        return [], False
+        ld = first_working_lto_linker(cc, cxx)
+        if ld is None:
+            return [], False
+        return (_fuse_ld_args(ld) if ld else [], True)
     for ld in cands:
         if _cc_accepts(cc, f"-fuse-ld={ld}"):
             return _fuse_ld_args(ld), True
     return [], True
+
+
+def first_working_lto_linker(cc, cxx):
+    """Full -fuse-ld= value that links LTO objects, "" for default, None if none."""
+    lto = _lto_flag(cxx)
+    for ld in _linker_candidates(cxx):
+        if _link_accepts(cc, lto, f"-fuse-ld={ld}"):
+            return ld
+    if _link_accepts(cc, lto):
+        return ""
+    return None
+
+
+def describe_lto_support(cfg):
+    """(available, reason): whether LTO objects link with the build toolchain.
+
+    Mirrors the compiler choice in build_source: PGO clang when enabled,
+    else the system compiler. Reason suits a tooltip.
+    """
+    cc = cxx = None
+    if (cfg or {}).get("pgo", True):
+        cc, cxx = _find_pgo_clang()
+    if not cxx:
+        cxx = _host_which("clang++") or _host_which("g++") or "c++"
+        cc = _host_which("clang") or _host_which("gcc") or "cc"
+    ld = first_working_lto_linker(cc, cxx)
+    if ld is not None:
+        return True, f"LTO objects link with {ld or 'the default linker'} ({cxx})."
+    cands = _linker_candidates(cxx)
+    tried = ", ".join([*cands, "default linker"]) if cands else "the default linker"
+    return False, (
+        f"LTO objects fail to link with {cxx} (tried {tried}). "
+        "Install mold or a matching ld.lld to enable LTO."
+    )
 
 
 def _linker_candidates(cxx):
