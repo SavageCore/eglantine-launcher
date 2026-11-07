@@ -142,6 +142,74 @@ def test_launch_forwards_config_home_through_flatpak(fake_home, monkeypatch, tmp
     ]
 
 
+def test_launch_applies_custom_env(fake_home, monkeypatch, tmp_path):
+    seen = _fake_popen(monkeypatch)
+    binary = tmp_path / "eglantine"
+    binary.write_text("")
+    cfg = {
+        "projects": [{"id": "p", "source_url": "https://github.com/o/r.git"}],
+        "custom_env": {"EDEN_MKW_MOVIE_UNPACED": "1", "EDEN_NX2_SWAP_INTERVAL": "0"},
+    }
+
+    tasks.launch(binary, cfg)
+
+    assert seen["env"]["EDEN_MKW_MOVIE_UNPACED"] == "1"
+    assert seen["env"]["EDEN_NX2_SWAP_INTERVAL"] == "0"
+    assert "XDG_CONFIG_HOME" in seen["env"]
+
+
+def test_launch_forwards_custom_env_through_flatpak(fake_home, monkeypatch, tmp_path):
+    seen = _fake_popen(monkeypatch)
+    monkeypatch.setenv("FLATPAK_ID", "dev.savagecore.EglantineLauncher")
+    monkeypatch.setattr(
+        tasks.shutil,
+        "which",
+        lambda name: "/usr/bin/flatpak-spawn" if name == "flatpak-spawn" else None,
+    )
+    binary = tmp_path / "eglantine"
+    binary.write_text("")
+    cfg = {
+        "projects": [{"id": "p", "source_url": "https://github.com/o/r.git"}],
+        "custom_env": {"EDEN_MKW_MOVIE_UNPACED": "1"},
+    }
+
+    tasks.launch(binary, cfg)
+
+    assert "--env=EDEN_MKW_MOVIE_UNPACED=1" in seen["cmd"]
+    assert seen["env"]["EDEN_MKW_MOVIE_UNPACED"] == "1"
+
+
+def test_launch_drops_invalid_and_reserved_env(fake_home, monkeypatch, tmp_path):
+    seen = _fake_popen(monkeypatch)
+    binary = tmp_path / "eglantine"
+    binary.write_text("")
+    cfg = {
+        "projects": [{"id": "p", "source_url": "https://github.com/o/r.git"}],
+        "custom_env": {
+            "EDEN_MKW_MOVIE_UNPACED": "1",
+            "bad-name": "x",
+            "": "y",
+            "XDG_CONFIG_HOME": "/elsewhere",
+        },
+    }
+
+    tasks.launch(binary, cfg)
+
+    home = tasks.source_config_home(cfg["projects"][0])
+    assert seen["env"]["EDEN_MKW_MOVIE_UNPACED"] == "1"
+    assert "bad-name" not in seen["env"]
+    assert seen["env"]["XDG_CONFIG_HOME"] == str(home)
+
+
+def test_emulator_env_helpers():
+    assert tasks.is_valid_env_name("EDEN_MKW_MOVIE_UNPACED")
+    assert not tasks.is_valid_env_name("bad-name")
+    assert not tasks.is_valid_env_name("1ABC")
+    assert not tasks.is_valid_env_name("")
+    assert tasks.emulator_env({}) == {}
+    assert tasks.emulator_env({"custom_env": "nope"}) == {}
+
+
 def test_project_storage_lists_and_deletes_config(fake_home, tmp_path):
     cfg = {
         "project": "p",

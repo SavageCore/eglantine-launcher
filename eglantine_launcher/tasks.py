@@ -3397,6 +3397,39 @@ def check_build_deps():
     return results
 
 
+# XDG_CONFIG_HOME is computed per source at launch time and always wins;
+# users cannot override it via custom_env.
+RESERVED_ENV_KEYS = frozenset({"XDG_CONFIG_HOME"})
+
+
+def is_valid_env_name(name):
+    """POSIX-ish env name: letters, digits and underscore, not starting with a digit."""
+    import re
+
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name or ""))
+
+
+def emulator_env(cfg):
+    """User-configured extra env vars for the emulator child process.
+
+    Returns a plain NAME -> value dict with invalid names and reserved
+    keys dropped. Values are coerced to str; non-dict storage yields {}.
+    """
+    raw = (cfg or {}).get("custom_env") if isinstance(cfg, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    clean = {}
+    for name, value in raw.items():
+        if not isinstance(name, str) or not is_valid_env_name(name):
+            continue
+        if name in RESERVED_ENV_KEYS:
+            continue
+        if value is None:
+            continue
+        clean[name] = value if isinstance(value, str) else str(value)
+    return clean
+
+
 def _on_host(cmd, env=None):
     """Run cmd on the host when sandboxed (flatpak), else directly.
 
@@ -3437,7 +3470,7 @@ def launch(path, cfg=None):
         os.startfile(str(path))
         return None
     os.chmod(path, 0o755)
-    env = {"XDG_CONFIG_HOME": str(home)}
+    env = {**emulator_env(cfg), "XDG_CONFIG_HOME": str(home)}
     return subprocess.Popen(
         _on_host([str(path)], env=env),
         env={**os.environ, **env},

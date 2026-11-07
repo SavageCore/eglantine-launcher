@@ -636,6 +636,10 @@ def default_config():
         "window_height": 620,
         # The "Running in the background" notification only shows once.
         "tray_notice_shown": False,
+        # Extra env vars applied to the emulator child process on launch
+        # (e.g. EDEN_MKW_MOVIE_UNPACED). Arbitrary NAME -> value pairs;
+        # XDG_CONFIG_HOME is reserved and managed by the launcher.
+        "custom_env": {},
         "projects": copy.deepcopy(DEFAULT_PROJECTS),
     }
 
