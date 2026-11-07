@@ -1,4 +1,5 @@
 import threading
+import time
 from pathlib import Path
 
 import gi
@@ -115,6 +116,18 @@ def version_tick_markup(text):
     return None
 
 
+def format_build_duration(seconds):
+    """Format an elapsed build time like 45s, 5m43s or 1h2m3s."""
+    total = max(0, int(seconds))
+    minutes, secs = divmod(total, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h{minutes}m{secs}s"
+    if minutes:
+        return f"{minutes}m{secs}s"
+    return f"{secs}s"
+
+
 class LauncherWindow(Adw.ApplicationWindow):
     def __init__(self, app, auto=False):
         super().__init__(application=app, title="Eglantine Launcher")
@@ -146,6 +159,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         self._cancel_event = threading.Event()
         self._build_proc = None
         self._build_proc_lock = threading.Lock()
+        self._build_start = None
         self.connect("close-request", self._on_close_request)
         self.connect("destroy", self._on_destroy)
 
@@ -282,11 +296,22 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.log_scrolled.set_visible(False)
         box.append(self.log_scrolled)
 
+        self.log_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.log_row.set_visible(False)
+        self.build_timer_label = Gtk.Label(label="")
+        self.build_timer_label.set_halign(Gtk.Align.START)
+        self.build_timer_label.set_hexpand(True)
+        self.build_timer_label.set_valign(Gtk.Align.CENTER)
+        self.build_timer_label.add_css_class("dim-label")
+        self.build_timer_label.set_visible(False)
+        self.log_row.append(self.build_timer_label)
         self.copy_btn = Gtk.Button(label="Copy log")
         self.copy_btn.connect("clicked", self.on_copy_log)
         self.copy_btn.set_visible(False)
         self.copy_btn.set_halign(Gtk.Align.END)
-        box.append(self.copy_btn)
+        self.copy_btn.set_valign(Gtk.Align.CENTER)
+        self.log_row.append(self.copy_btn)
+        box.append(self.log_row)
 
         self.launch_btn = Gtk.Button(label="Launch")
         self.launch_btn.add_css_class("suggested-action")
@@ -469,6 +494,7 @@ class LauncherWindow(Adw.ApplicationWindow):
     def _append_log(self, line):
         def _do():
             self.log_scrolled.set_visible(True)
+            self.log_row.set_visible(True)
             self.copy_btn.set_visible(True)
             buf = self.log_view.get_buffer()
             buf.insert(buf.get_end_iter(), line + "\n")
@@ -477,6 +503,19 @@ class LauncherWindow(Adw.ApplicationWindow):
             self.log_view.scroll_to_mark(mark, 0.0, True, 0.0, 1.0)
 
         GLib.idle_add(_do)
+
+    def _show_build_time(self, elapsed):
+        self.log_row.set_visible(True)
+        self.build_timer_label.set_text(f"Build completed in {format_build_duration(elapsed)}")
+        self.build_timer_label.set_visible(True)
+        return False
+
+    def _note_build_done(self):
+        """Stamp the source-build timer. Runs on the worker thread."""
+        start = getattr(self, "_build_start", None)
+        if start is None:
+            return
+        GLib.idle_add(self._show_build_time, time.monotonic() - start)
 
     def _set_busy(self, busy):
         self._busy = busy
@@ -1160,13 +1199,16 @@ class LauncherWindow(Adw.ApplicationWindow):
         self._set_busy(True)
         self._cancel_event.clear()
         self._set_build_proc(None)
+        self._build_start = time.monotonic()
         self.progress.set_fraction(0.0)
         GLib.idle_add(self.progress.set_visible, True)
         self._last_fraction_time = 0.0
         # clear log
         self.log_view.get_buffer().set_text("")
         GLib.idle_add(self.log_scrolled.set_visible, False)
+        GLib.idle_add(self.log_row.set_visible, False)
         GLib.idle_add(self.copy_btn.set_visible, False)
+        GLib.idle_add(self.build_timer_label.set_visible, False)
         is_source = getattr(self, "_launch_mode", self.cfg.get("mode", "release")) != "release"
         GLib.idle_add(self.stop_btn.set_visible, is_source)
         GLib.idle_add(self.stop_btn.set_sensitive, True)
@@ -1322,6 +1364,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                         on_proc=self._set_build_proc,
                         progress_cb=self._note_git_fraction,
                     )
+                    self._note_build_done()
                     launched = self._launch_now(binary)
                     return
                 tag = None
@@ -1346,6 +1389,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                     on_proc=self._set_build_proc,
                     progress_cb=self._note_git_fraction,
                 )
+                self._note_build_done()
                 launched = self._launch_now(binary)
         except BuildCancelled:
             self._append_log("Build cancelled.")
