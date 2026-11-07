@@ -137,11 +137,13 @@ class LauncherWindow(Adw.ApplicationWindow):
         # become links to the canonical one so saves stay global.
         migrate_emulator_dirs(self.cfg)
         try:
-            win_w = int(self.cfg.get("window_width") or 640)
+            win_w = int(self.cfg.get("window_width") or 980)
             win_h = self.cfg.get("window_height")
-            win_h = int(win_h) if win_h else 600
+            win_h = int(win_h) if win_h else 620
         except (TypeError, ValueError):
-            win_w, win_h = 640, 600
+            win_w, win_h = 980, 620
+        # Side-by-side layout needs width: clamp older saved sizes up.
+        win_w = max(win_w, 900)
         self.set_default_size(win_w, win_h)
         self.auto = auto
         self._busy = False
@@ -177,11 +179,11 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.add_action(about_action)
         self._build_menu()
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        box.set_margin_top(12)
-        box.set_margin_bottom(12)
-        box.set_margin_start(12)
-        box.set_margin_end(12)
+        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        left.set_size_request(420, -1)
+        left.set_hexpand(False)
+        left.set_vexpand(True)
+        left.set_valign(Gtk.Align.START)
 
         group = Adw.PreferencesGroup()
 
@@ -263,7 +265,7 @@ class LauncherWindow(Adw.ApplicationWindow):
             self.cpu_row.set_selected(0)
         group.add(self.cpu_row)
 
-        box.append(group)
+        left.append(group)
 
         self.project_row.connect("notify::selected", self._on_selector_changed)
         self.mode_row.connect("notify::selected", self._on_selector_changed)
@@ -280,39 +282,10 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.banner.connect("button-clicked", self._on_banner_button)
         self._banner_action = None
 
-        self.toast_overlay = Adw.ToastOverlay()
-
         self.progress = Gtk.ProgressBar()
         self.progress.set_hexpand(True)
         self.progress.set_valign(Gtk.Align.CENTER)
         self.progress.set_visible(False)
-
-        self.log_view = Gtk.TextView()
-        self.log_view.set_editable(False)
-        self.log_view.set_monospace(True)
-        self.log_scrolled = Gtk.ScrolledWindow()
-        self.log_scrolled.set_child(self.log_view)
-        self.log_scrolled.set_vexpand(True)
-        self.log_scrolled.set_min_content_height(120)
-        self.log_scrolled.set_visible(False)
-        box.append(self.log_scrolled)
-
-        self.log_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        self.log_row.set_visible(False)
-        self.build_timer_label = Gtk.Label(label="")
-        self.build_timer_label.set_halign(Gtk.Align.START)
-        self.build_timer_label.set_hexpand(True)
-        self.build_timer_label.set_valign(Gtk.Align.CENTER)
-        self.build_timer_label.add_css_class("dim-label")
-        self.build_timer_label.set_visible(False)
-        self.log_row.append(self.build_timer_label)
-        self.copy_btn = Gtk.Button(label="Copy log")
-        self.copy_btn.connect("clicked", self.on_copy_log)
-        self.copy_btn.set_visible(False)
-        self.copy_btn.set_halign(Gtk.Align.END)
-        self.copy_btn.set_valign(Gtk.Align.CENTER)
-        self.log_row.append(self.copy_btn)
-        box.append(self.log_row)
 
         self.launch_btn = Gtk.Button(label="Launch")
         self.launch_btn.add_css_class("suggested-action")
@@ -326,13 +299,69 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.shortcut_btn = Gtk.Button(label="Shortcuts...")
         self.shortcut_btn.connect("clicked", self.on_shortcuts_clicked)
 
-        self.action_bar = Gtk.ActionBar()
-        self.action_bar.pack_start(self.shortcut_btn)
-        self.action_bar.pack_start(self.progress)
+        self.action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.action_row.set_valign(Gtk.Align.CENTER)
+        self.action_row.append(self.shortcut_btn)
+        self.action_row.append(self.progress)
         # End group reads left-to-right: Stop then Launch keeps
         # Launch rightmost as the primary action.
-        self.action_bar.pack_end(self.stop_btn)
-        self.action_bar.pack_end(self.launch_btn)
+        self.action_row.append(self.stop_btn)
+        self.action_row.append(self.launch_btn)
+        left.append(self.action_row)
+
+        # Right column: always-visible build log with its own toast scope.
+        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        right.set_hexpand(True)
+        right.set_vexpand(True)
+
+        self.log_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.log_title = Gtk.Label(label="Build log")
+        self.log_title.set_halign(Gtk.Align.START)
+        self.log_title.set_valign(Gtk.Align.CENTER)
+        self.log_title.add_css_class("dim-label")
+        self.log_row.append(self.log_title)
+        self.build_timer_label = Gtk.Label(label="")
+        self.build_timer_label.set_halign(Gtk.Align.START)
+        self.build_timer_label.set_hexpand(True)
+        self.build_timer_label.set_valign(Gtk.Align.CENTER)
+        self.build_timer_label.add_css_class("dim-label")
+        self.build_timer_label.set_visible(False)
+        self.log_row.append(self.build_timer_label)
+        self.copy_btn = Gtk.Button(label="Copy log")
+        self.copy_btn.connect("clicked", self.on_copy_log)
+        self.copy_btn.set_visible(False)
+        self.copy_btn.set_halign(Gtk.Align.END)
+        self.copy_btn.set_valign(Gtk.Align.CENTER)
+        self.log_row.append(self.copy_btn)
+        right.append(self.log_row)
+
+        self.log_view = Gtk.TextView()
+        self.log_view.set_editable(False)
+        self.log_view.set_monospace(True)
+        self.log_view.get_buffer().set_text("Build output appears here.")
+        self._log_has_content = False
+        self.log_scrolled = Gtk.ScrolledWindow()
+        self.log_scrolled.set_child(self.log_view)
+        self.log_scrolled.set_vexpand(True)
+        self.log_scrolled.set_hexpand(True)
+        self.log_scrolled.set_min_content_height(280)
+        self.log_scrolled.set_min_content_width(360)
+
+        self.toast_overlay = Adw.ToastOverlay()
+        self.toast_overlay.set_child(self.log_scrolled)
+        self.toast_overlay.set_vexpand(True)
+        self.toast_overlay.set_hexpand(True)
+        right.append(self.toast_overlay)
+
+        main = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        main.set_margin_top(12)
+        main.set_margin_bottom(12)
+        main.set_margin_start(12)
+        main.set_margin_end(12)
+        main.set_hexpand(True)
+        main.set_vexpand(True)
+        main.append(left)
+        main.append(right)
 
         # persist pgo/lto/cpu choices immediately (project/mode persist via _on_selector_changed)
         self.pgo_row.connect("notify::active", self._on_pgo_toggled)
@@ -342,22 +371,16 @@ class LauncherWindow(Adw.ApplicationWindow):
         self._schedule_lto_probe()
 
         # Banner sits edge-to-edge above the margined content; toasts
-        # overlay everything transiently; Launch lives in a proper
-        # bottom ActionBar instead of a hand-rolled button box.
-        # Content stays top-aligned: the pill cloud below Project varies in
-        # height per project, and centering would shift the whole card up
+        # overlay only the log panel so they never cover the controls.
+        # Left column stays top-aligned: the pill cloud below Project varies
+        # in height per project, and centering would shift the whole card up
         # and down on every selection change.
-        box.set_vexpand(True)
-        box.set_valign(Gtk.Align.START)
         content_wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         content_wrap.append(self.banner)
-        content_wrap.append(box)
-        self.toast_overlay.set_child(content_wrap)
+        content_wrap.append(main)
         toolbar_view = Adw.ToolbarView()
         toolbar_view.add_top_bar(toolbar)
-        toolbar_view.set_content(self.toast_overlay)
-        toolbar_view.add_bottom_bar(self.action_bar)
-        toolbar_view.set_bottom_bar_style(Adw.ToolbarStyle.RAISED)
+        toolbar_view.set_content(content_wrap)
         self.set_content(toolbar_view)
 
         if auto:
@@ -496,10 +519,11 @@ class LauncherWindow(Adw.ApplicationWindow):
 
     def _append_log(self, line):
         def _do():
-            self.log_scrolled.set_visible(True)
-            self.log_row.set_visible(True)
-            self.copy_btn.set_visible(True)
             buf = self.log_view.get_buffer()
+            if not getattr(self, "_log_has_content", False):
+                buf.set_text("")
+                self._log_has_content = True
+                self.copy_btn.set_visible(True)
             buf.insert(buf.get_end_iter(), line + "\n")
             # scroll to end
             mark = buf.get_insert()
@@ -508,7 +532,6 @@ class LauncherWindow(Adw.ApplicationWindow):
         GLib.idle_add(_do)
 
     def _show_build_time(self, elapsed):
-        self.log_row.set_visible(True)
         self.build_timer_label.set_text(f"Build completed in {format_build_duration(elapsed)}")
         self.build_timer_label.set_visible(True)
         return False
@@ -1207,10 +1230,9 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.progress.set_fraction(0.0)
         GLib.idle_add(self.progress.set_visible, True)
         self._last_fraction_time = 0.0
-        # clear log
+        # clear log but keep the side panel visible (option a)
         self.log_view.get_buffer().set_text("")
-        GLib.idle_add(self.log_scrolled.set_visible, False)
-        GLib.idle_add(self.log_row.set_visible, False)
+        self._log_has_content = False
         GLib.idle_add(self.copy_btn.set_visible, False)
         GLib.idle_add(self.build_timer_label.set_visible, False)
         is_source = getattr(self, "_launch_mode", self.cfg.get("mode", "release")) != "release"

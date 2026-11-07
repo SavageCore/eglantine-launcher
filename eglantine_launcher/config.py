@@ -630,11 +630,9 @@ def default_config():
         "minimize_on_launch": None,
         "close_behavior": None,
         # Main window size; updated whenever the window closes or hides.
-        # Matches the documented screenshots (630x450: the 1px
-        # backdrop frame plus the 4px theme CSD frame are cropped
-        # in scripts/shot_alpha.py).
-        "window_width": 640,
-        "window_height": 460,
+        # Wide default fits the side-by-side controls + build log layout.
+        "window_width": 980,
+        "window_height": 620,
         # The "Running in the background" notification only shows once.
         "tray_notice_shown": False,
         "projects": copy.deepcopy(DEFAULT_PROJECTS),
