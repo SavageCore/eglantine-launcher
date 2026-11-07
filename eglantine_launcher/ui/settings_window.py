@@ -173,6 +173,8 @@ class ProjectEditDialog(Adw.Window):
         self._pid = self.project.get("id")
         self._source_url = self.project.get("source_url", "") or prefill.get("source_url", "")
         self._default_branch = prefill.get("default_branch")
+        raw_env = self.project.get("custom_env")
+        self._custom_env = dict(raw_env) if isinstance(raw_env, dict) else {}
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         box.set_margin_top(12)
@@ -268,6 +270,7 @@ class ProjectEditDialog(Adw.Window):
         settings_group.add(self.config_picker_row)
         settings_group.add(self.config_key_entry)
         settings_page.append(settings_group)
+        settings_page.append(self._build_env_group())
 
         if self._pid:
             self._layout = SidebarLayout([("settings", "Settings"), ("storage", "Storage"), ("tags", "Tags")])
@@ -648,6 +651,87 @@ class ProjectEditDialog(Adw.Window):
             self.config_picker_row.set_selected(self.config_picker_keys.index(current))
         self.config_picker_row.set_visible(len(self.config_picker_keys) > 1)
 
+    def _build_env_group(self):
+        """Per-source extra environment variables, staged until Save."""
+        group = Adw.PreferencesGroup(
+            title="Environment variables",
+            description="Extra variables set on this source's emulator process at "
+            "launch, e.g. EDEN_MKW_MOVIE_UNPACED=1. XDG_CONFIG_HOME is reserved "
+            "and managed by the launcher.",
+        )
+        self._env_group = group
+        self._env_rows = []
+        self._refresh_env_rows()
+        form = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        entry_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self._env_name_entry = Gtk.Entry()
+        self._env_name_entry.set_placeholder_text("Name, e.g. EDEN_MKW_MOVIE_UNPACED")
+        self._env_name_entry.set_hexpand(True)
+        entry_row.append(self._env_name_entry)
+        self._env_value_entry = Gtk.Entry()
+        self._env_value_entry.set_placeholder_text("Value, e.g. 1")
+        self._env_value_entry.set_hexpand(True)
+        self._env_value_entry.connect("activate", self._on_add_env_row)
+        entry_row.append(self._env_value_entry)
+        form.append(entry_row)
+        add_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        add_box.set_halign(Gtk.Align.END)
+        add_btn = Gtk.Button(label="Add variable")
+        add_btn.connect("clicked", self._on_add_env_row)
+        add_box.append(add_btn)
+        form.append(add_box)
+        self._env_error = Gtk.Label(label="")
+        self._env_error.add_css_class("error")
+        self._env_error.set_wrap(True)
+        self._env_error.set_xalign(0)
+        form.append(self._env_error)
+        group.add(form)
+        return group
+
+    def _refresh_env_rows(self):
+        for row in getattr(self, "_env_rows", []):
+            try:
+                self._env_group.remove(row)
+            except Exception:
+                pass
+        self._env_rows = []
+        for name in sorted(self._custom_env):
+            row = Adw.ActionRow(title=name, subtitle=str(self._custom_env[name]))
+            del_btn = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+            del_btn.add_css_class("flat")
+            del_btn.set_valign(Gtk.Align.CENTER)
+            del_btn.set_tooltip_text(f"Remove {name}")
+            del_btn.connect("clicked", self._on_delete_env_row, name)
+            row.add_suffix(del_btn)
+            self._env_rows.append(row)
+            self._env_group.add(row)
+        return False
+
+    def _on_add_env_row(self, *_args):
+        name = self._env_name_entry.get_text().strip()
+        value = self._env_value_entry.get_text().strip()
+        if not name or not value:
+            self._env_error.set_label("Enter a name and a value.")
+            return
+        if not is_valid_env_name(name):
+            self._env_error.set_label("Use letters, digits and underscore, not starting with a digit.")
+            return
+        if name in RESERVED_ENV_KEYS:
+            self._env_error.set_label("XDG_CONFIG_HOME is reserved - managed by the launcher.")
+            return
+        if name in self._custom_env:
+            self._env_error.set_label("That variable is already in the list.")
+            return
+        self._env_error.set_label("")
+        self._custom_env[name] = value
+        self._env_name_entry.set_text("")
+        self._env_value_entry.set_text("")
+        self._refresh_env_rows()
+
+    def _on_delete_env_row(self, _btn, name):
+        self._custom_env.pop(name, None)
+        self._refresh_env_rows()
+
     def _on_config_picker_changed(self, row, _pspec):
         idx = row.get_selected()
         if 0 <= idx < len(self.config_picker_keys):
@@ -673,6 +757,10 @@ class ProjectEditDialog(Adw.Window):
             "exclude_keywords": self.exclude_entry.get_text().strip(),
             "icon_url": self.icon_entry.get_text().strip() or None,
         }
+        # Per-source extra environment variables, staged in the dialog. Always
+        # written (even empty) so save() can tell a fresh writer that cleared
+        # the list from a stale one that never knew the key existed.
+        project["custom_env"] = dict(self._custom_env)
         # Preserve curated/external fields the editor has no widgets for
         # (best_for/tags/confidence/origin/remote/is_pr/...). Otherwise
         # opening and saving a wichforks default would wipe its metadata.
@@ -843,10 +931,7 @@ class SettingsWindow(Adw.Window):
         open_btn.connect("clicked", self._on_open_data_folder)
         data_row.add_suffix(open_btn)
         data_group.add(data_row)
-        self._build_env_widgets()
-        self._layout.add_page(
-            "general", page_box([window_group, self._env_group, self._env_form, data_group])
-        )
+        self._layout.add_page("general", page_box([window_group, data_group]))
         self._layout.add_page("github", page_box([self._token_status_label, self.api_group, token_link]))
         self._layout.add_page("backups", page_box([self.backup_group, self.backup_status]))
         self._layout.add_page("sources", page_box([build_group, src_header, self.sources_group]))
@@ -898,94 +983,6 @@ class SettingsWindow(Adw.Window):
         self.set_content(toolbar_view)
 
         self._refresh()
-
-    def _build_env_widgets(self):
-        """Emulator environment editor for the General page."""
-        self._env_group = Adw.PreferencesGroup(
-            title="Emulator environment",
-            description="Extra environment variables set on the emulator process at "
-            "launch. XDG_CONFIG_HOME is reserved and managed by the launcher.",
-        )
-        self._env_rows = []
-        form = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        entry_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self._env_name_entry = Gtk.Entry()
-        self._env_name_entry.set_placeholder_text("Name, e.g. EDEN_MKW_MOVIE_UNPACED")
-        self._env_name_entry.set_hexpand(True)
-        entry_row.append(self._env_name_entry)
-        self._env_value_entry = Gtk.Entry()
-        self._env_value_entry.set_placeholder_text("Value, e.g. 1")
-        self._env_value_entry.set_hexpand(True)
-        self._env_value_entry.connect("activate", self._on_add_env)
-        entry_row.append(self._env_value_entry)
-        add_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        add_box.set_halign(Gtk.Align.END)
-        add_btn = Gtk.Button(label="Add variable")
-        add_btn.connect("clicked", self._on_add_env)
-        add_box.append(add_btn)
-        self._env_error = Gtk.Label(label="")
-        self._env_error.add_css_class("error")
-        self._env_error.set_wrap(True)
-        self._env_error.set_xalign(0)
-        form.append(entry_row)
-        form.append(add_box)
-        form.append(self._env_error)
-        self._env_form = form
-        self._refresh_env()
-
-    def _custom_env_dict(self):
-        env = self.cfg.get("custom_env")
-        if not isinstance(env, dict):
-            env = {}
-            self.cfg["custom_env"] = env
-        return env
-
-    def _refresh_env(self):
-        for row in getattr(self, "_env_rows", []):
-            try:
-                self._env_group.remove(row)
-            except Exception:
-                pass
-        self._env_rows = []
-        for name in sorted(self._custom_env_dict()):
-            value = self._custom_env_dict()[name]
-            row = Adw.ActionRow(title=name, subtitle=str(value))
-            del_btn = Gtk.Button.new_from_icon_name("user-trash-symbolic")
-            del_btn.add_css_class("flat")
-            del_btn.set_valign(Gtk.Align.CENTER)
-            del_btn.set_tooltip_text(f"Remove {name}")
-            del_btn.connect("clicked", self._on_delete_env, name)
-            row.add_suffix(del_btn)
-            self._env_rows.append(row)
-            self._env_group.add(row)
-        return False
-
-    def _on_add_env(self, *_args):
-        name = self._env_name_entry.get_text().strip()
-        value = self._env_value_entry.get_text().strip()
-        if not name or not value:
-            self._env_error.set_label("Enter a name and a value.")
-            return
-        if not is_valid_env_name(name):
-            self._env_error.set_label("Use letters, digits and underscore, not starting with a digit.")
-            return
-        if name in RESERVED_ENV_KEYS:
-            self._env_error.set_label("XDG_CONFIG_HOME is reserved - managed by the launcher.")
-            return
-        if name in self._custom_env_dict():
-            self._env_error.set_label("That variable is already in the list.")
-            return
-        self._env_error.set_label("")
-        self._custom_env_dict()[name] = value
-        save_config(self.cfg)
-        self._env_name_entry.set_text("")
-        self._env_value_entry.set_text("")
-        self._refresh_env()
-
-    def _on_delete_env(self, _btn, name):
-        self._custom_env_dict().pop(name, None)
-        save_config(self.cfg)
-        self._refresh_env()
 
     def _build_games_page(self):
         """Full game catalog: included entries plus the user's own additions."""

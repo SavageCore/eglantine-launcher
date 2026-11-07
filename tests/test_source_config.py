@@ -142,14 +142,18 @@ def test_launch_forwards_config_home_through_flatpak(fake_home, monkeypatch, tmp
     ]
 
 
+def _cfg_with_env(**env):
+    return {
+        "project": "p",
+        "projects": [{"id": "p", "source_url": "https://github.com/o/r.git", "custom_env": dict(env)}],
+    }
+
+
 def test_launch_applies_custom_env(fake_home, monkeypatch, tmp_path):
     seen = _fake_popen(monkeypatch)
     binary = tmp_path / "eglantine"
     binary.write_text("")
-    cfg = {
-        "projects": [{"id": "p", "source_url": "https://github.com/o/r.git"}],
-        "custom_env": {"EDEN_MKW_MOVIE_UNPACED": "1", "EDEN_NX2_SWAP_INTERVAL": "0"},
-    }
+    cfg = _cfg_with_env(EDEN_MKW_MOVIE_UNPACED="1", EDEN_NX2_SWAP_INTERVAL="0")
 
     tasks.launch(binary, cfg)
 
@@ -168,10 +172,7 @@ def test_launch_forwards_custom_env_through_flatpak(fake_home, monkeypatch, tmp_
     )
     binary = tmp_path / "eglantine"
     binary.write_text("")
-    cfg = {
-        "projects": [{"id": "p", "source_url": "https://github.com/o/r.git"}],
-        "custom_env": {"EDEN_MKW_MOVIE_UNPACED": "1"},
-    }
+    cfg = _cfg_with_env(EDEN_MKW_MOVIE_UNPACED="1")
 
     tasks.launch(binary, cfg)
 
@@ -179,19 +180,39 @@ def test_launch_forwards_custom_env_through_flatpak(fake_home, monkeypatch, tmp_
     assert seen["env"]["EDEN_MKW_MOVIE_UNPACED"] == "1"
 
 
-def test_launch_drops_invalid_and_reserved_env(fake_home, monkeypatch, tmp_path):
+def test_launch_env_is_per_source(fake_home, monkeypatch, tmp_path):
     seen = _fake_popen(monkeypatch)
     binary = tmp_path / "eglantine"
     binary.write_text("")
     cfg = {
-        "projects": [{"id": "p", "source_url": "https://github.com/o/r.git"}],
-        "custom_env": {
+        "project": "other",
+        "projects": [
+            {
+                "id": "p",
+                "source_url": "https://github.com/o/r.git",
+                "custom_env": {"EDEN_MKW_MOVIE_UNPACED": "1"},
+            },
+            {"id": "other", "source_url": "https://github.com/o/other.git"},
+        ],
+    }
+
+    tasks.launch(binary, cfg)
+
+    assert "EDEN_MKW_MOVIE_UNPACED" not in seen["env"]
+
+
+def test_launch_drops_invalid_and_reserved_env(fake_home, monkeypatch, tmp_path):
+    seen = _fake_popen(monkeypatch)
+    binary = tmp_path / "eglantine"
+    binary.write_text("")
+    cfg = _cfg_with_env(
+        **{
             "EDEN_MKW_MOVIE_UNPACED": "1",
             "bad-name": "x",
             "": "y",
             "XDG_CONFIG_HOME": "/elsewhere",
-        },
-    }
+        }
+    )
 
     tasks.launch(binary, cfg)
 
@@ -207,7 +228,31 @@ def test_emulator_env_helpers():
     assert not tasks.is_valid_env_name("1ABC")
     assert not tasks.is_valid_env_name("")
     assert tasks.emulator_env({}) == {}
-    assert tasks.emulator_env({"custom_env": "nope"}) == {}
+    assert tasks.emulator_env({"project": "p", "projects": [{"id": "p"}]}) == {}
+    assert tasks.emulator_env({"project": "p", "projects": [{"id": "p", "custom_env": "nope"}]}) == {}
+
+
+def test_stale_save_preserves_project_custom_env(fake_home):
+    from eglantine_launcher import config as config_module
+
+    cfg = config_module.load()
+    cfg["projects"][0]["custom_env"] = {"EDEN_MKW_MOVIE_UNPACED": "1"}
+    config_module.save(cfg)
+
+    # A writer that predates the feature has no custom_env key on its
+    # projects; saving it must not wipe the user's variables.
+    stale = config_module.default_config()
+    assert "custom_env" not in stale["projects"][0]
+    stale["window_width"] = 800
+    config_module.save(stale)
+
+    assert config_module.load()["projects"][0]["custom_env"] == {"EDEN_MKW_MOVIE_UNPACED": "1"}
+
+    # A fresh writer that explicitly clears the list persists the clear.
+    fresh = config_module.load()
+    fresh["projects"][0]["custom_env"] = {}
+    config_module.save(fresh)
+    assert config_module.load()["projects"][0]["custom_env"] == {}
 
 
 def test_project_storage_lists_and_deletes_config(fake_home, tmp_path):
@@ -760,6 +805,44 @@ def test_edit_dialog_tags_tab_add_game(needs_display, fake_home):
             dialog.close()
         except Exception:
             pass
+
+
+def test_edit_dialog_env_round_trip(needs_display, fake_home):
+    from eglantine_launcher.config import DEFAULT_PROJECTS
+    from eglantine_launcher.ui.settings_window import ProjectEditDialog
+
+    eglantine = next(p for p in DEFAULT_PROJECTS if p["id"] == "eglantine")
+    eglantine = dict(eglantine, custom_env={"EDEN_NX2_SWAP_INTERVAL": "0"})
+    cfg = {"projects": []}
+    saved = {}
+    dialog = ProjectEditDialog(
+        None, dict(eglantine), lambda project, _old: saved.update(project=project), cfg=cfg
+    )
+    try:
+        # invalid names and reserved keys are rejected, not staged
+        dialog._env_name_entry.set_text("bad-name")
+        dialog._env_value_entry.set_text("x")
+        dialog._on_add_env_row()
+        assert "underscore" in dialog._env_error.get_label()
+        dialog._env_name_entry.set_text("XDG_CONFIG_HOME")
+        dialog._env_value_entry.set_text("/elsewhere")
+        dialog._on_add_env_row()
+        assert "reserved" in dialog._env_error.get_label()
+        # a valid entry stages alongside the existing one
+        dialog._env_name_entry.set_text("EDEN_MKW_MOVIE_UNPACED")
+        dialog._env_value_entry.set_text("1")
+        dialog._on_add_env_row()
+        assert dialog._env_error.get_label() == ""
+        dialog._save()
+    finally:
+        try:
+            dialog.close()
+        except Exception:
+            pass
+    assert saved["project"]["custom_env"] == {
+        "EDEN_NX2_SWAP_INTERVAL": "0",
+        "EDEN_MKW_MOVIE_UNPACED": "1",
+    }
 
 
 def test_tags_tab_upstream_links_to_wichforks(needs_display, fake_home):

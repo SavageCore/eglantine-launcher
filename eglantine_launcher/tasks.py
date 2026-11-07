@@ -3412,10 +3412,18 @@ def is_valid_env_name(name):
 def emulator_env(cfg):
     """User-configured extra env vars for the emulator child process.
 
-    Returns a plain NAME -> value dict with invalid names and reserved
-    keys dropped. Values are coerced to str; non-dict storage yields {}.
+    Stored per source on the project dict (``project["custom_env"]``),
+    since only some forks read a given toggle. Returns a plain NAME ->
+    value dict with invalid names and reserved keys dropped. Values are
+    coerced to str; missing or non-dict storage yields {}.
     """
-    raw = (cfg or {}).get("custom_env") if isinstance(cfg, dict) else None
+    info = None
+    if isinstance(cfg, dict):
+        try:
+            info = project_info(cfg)
+        except Exception:
+            info = None
+    raw = (info or {}).get("custom_env")
     if not isinstance(raw, dict):
         return {}
     clean = {}

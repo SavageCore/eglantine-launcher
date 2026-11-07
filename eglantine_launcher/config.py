@@ -636,10 +636,6 @@ def default_config():
         "window_height": 620,
         # The "Running in the background" notification only shows once.
         "tray_notice_shown": False,
-        # Extra env vars applied to the emulator child process on launch
-        # (e.g. EDEN_MKW_MOVIE_UNPACED). Arbitrary NAME -> value pairs;
-        # XDG_CONFIG_HOME is reserved and managed by the launcher.
-        "custom_env": {},
         "projects": copy.deepcopy(DEFAULT_PROJECTS),
     }
 
@@ -842,6 +838,24 @@ def _union_projects(disk_projects, mem_projects, tombstoned):
     return list(by_id.values())
 
 
+def _preserve_project_env(disk_projects, merged_projects):
+    """Restore per-source custom_env dropped by a stale writer.
+
+    Fresh writers always store the custom_env key (even empty), so a
+    project dict without it predates the feature: keep what is on disk
+    rather than wipe the user's variables.
+    """
+    disk_by_id = {p["id"]: p for p in disk_projects or [] if isinstance(p, dict) and p.get("id")}
+    for p in merged_projects or []:
+        if not isinstance(p, dict) or not p.get("id"):
+            continue
+        if "custom_env" not in p and isinstance(disk_by_id.get(p["id"]), dict):
+            disk_env = disk_by_id[p["id"]].get("custom_env")
+            if isinstance(disk_env, dict):
+                p["custom_env"] = copy.deepcopy(disk_env)
+    return merged_projects
+
+
 def save(cfg):
     # Merge over defaults and the file on disk so a partial or stale dict
     # from any caller can never wipe out keys it doesn't know about (the
@@ -858,7 +872,10 @@ def save(cfg):
     # re-add. A stale copy merely holding the id must not clear a tombstone
     # written elsewhere after it loaded.
     tombstoned -= {pid for pid in mem_ids if pid in set(cfg.get("deleted_projects") or [])}
-    merged["projects"] = _union_projects(on_disk.get("projects"), merged.get("projects"), tombstoned)
+    merged["projects"] = _preserve_project_env(
+        on_disk.get("projects"),
+        _union_projects(on_disk.get("projects"), merged.get("projects"), tombstoned),
+    )
     merged["deleted_projects"] = sorted(tombstoned)[-200:]
     # A stale in-memory dict (long-running process, pre-fix file) must not
     # push tmp-tree paths back into the file: prefer what is on disk, else
