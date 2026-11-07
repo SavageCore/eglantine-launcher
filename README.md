@@ -97,8 +97,9 @@ With PGO enabled (default), Linux source builds additionally use clang and
 the Eden PGO profile when available (prefers `~/opt/llvm23`, else system
 `clang++`; the profile is verified readable before use and downloads to
 `~/.cache`). If no usable clang/profile is found the launcher says so and
-does a regular build instead. PGO compiles are capped at 6 jobs to avoid
-running out of RAM.
+does a regular build instead. Source builds target your CPU's x86-64 level
+and enable LTO when the toolchain links it (both adjustable in the build
+options); jobs scale with RAM to avoid running out of memory.
 
 ## Install shortcut
 

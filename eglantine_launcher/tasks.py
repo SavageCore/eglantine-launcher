@@ -4,6 +4,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -2504,26 +2505,109 @@ def select_arch_flags(cc, cpu_level="auto"):
     return f"-march={march} -mtune={tune}", f"v{want}"
 
 
-def pick_build_linker(cc, cxx):
-    """Linker flags preferring lld with clang, else mold when usable."""
+def pick_build_linker(cc, cxx, want_lto=False):
+    """(LINK_ARGS, lto_ok): linker flags plus whether LTO objects link.
+
+    lld is preferred with clang (it brings its own LTO support); mold next.
+    Candidates are full paths, version-matched sibling first: clang resolves
+    a bare -fuse-ld=lld to its own directory first, which silently picks a
+    broken bundled lld over a working system one. The LLVM gold plugin bfd
+    needs for clang LTO is often missing, so when LTO is wanted every
+    candidate is verified with a trial link first. When nothing links LTO
+    objects, lto_ok is False and the caller disables IPO.
+    """
+    cands = _linker_candidates(cxx)
+    if want_lto:
+        lto = _lto_flag(cxx)
+        for ld in cands:
+            if _link_accepts(cc, lto, f"-fuse-ld={ld}"):
+                return _fuse_ld_args(ld), True
+        if _link_accepts(cc, lto):
+            return [], True
+        return [], False
+    for ld in cands:
+        if _cc_accepts(cc, f"-fuse-ld={ld}"):
+            return _fuse_ld_args(ld), True
+    return [], True
+
+
+def _linker_candidates(cxx):
+    """Full -fuse-ld= values to try: version-matched sibling first, then PATH."""
+    cands = []
+    if _cxx_is_clang(cxx):
+        for p in (_sibling_tool_path(cxx, "ld.lld"), _host_which("ld.lld")):
+            if p and p not in cands:
+                cands.append(p)
+    mold = _host_which("mold")
+    if mold and mold not in cands:
+        cands.append(mold)
+    return cands
+
+
+def _cxx_is_clang(cxx):
+    """True when CXX reports itself as clang."""
     try:
         out = _host_check_output([cxx, "--version"], text=True, stderr=subprocess.STDOUT, timeout=30)
-        is_clang = "clang" in out.lower()
+        return "clang" in out.lower()
     except Exception:
-        is_clang = False
-    if is_clang and _host_which("ld.lld") and _cc_accepts(cc, "-fuse-ld=lld"):
-        return [
-            "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld",
-            "-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld",
-            "-DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld",
-        ]
-    if _host_which("mold") and _cc_accepts(cc, "-fuse-ld=mold"):
-        return [
-            "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold",
-            "-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=mold",
-            "-DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=mold",
-        ]
-    return []
+        return False
+
+
+def _sibling_tool(compiler, tool):
+    """True when TOOL sits next to COMPILER (e.g. ld.lld beside clang++)."""
+    return _sibling_tool_path(compiler, tool) is not None
+
+
+def _sibling_tool_path(compiler, tool):
+    """Full path of TOOL next to COMPILER, or None."""
+    try:
+        base = _host_which(compiler)
+        path = Path(base) if base else Path(str(compiler))
+        if not path.is_absolute():
+            return None
+        cand = path.parent / tool
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return str(cand)
+    except Exception:
+        pass
+    return None
+
+
+def _lto_flag(cxx):
+    """LTO flag CMake's IPO uses for this compiler."""
+    return "-flto=thin" if _cxx_is_clang(cxx) else "-flto"
+
+
+def _fuse_ld_args(ld):
+    return [
+        f"-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld={ld}",
+        f"-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld={ld}",
+        f"-DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld={ld}",
+    ]
+
+
+def _link_accepts(cc, *flags):
+    """True when CC links a trivial program with FLAGS.
+
+    Unverifiable compilers (binary not found, e.g. mocked paths in tests)
+    return True so selection never blocks on probing alone; the real
+    configure step still fails loudly on a truly missing compiler.
+    """
+    if _host_which(cc) is None and not Path(str(cc)).exists():
+        return True
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = _host_run(
+                [cc, *flags, "-x", "c", "-", "-o", os.path.join(tmp, "probe")],
+                input="int main(void){return 0;}\n",
+                text=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=180,
+            )
+            return proc.returncode == 0
+    except Exception:
+        return False
 
 
 def _mem_gb():
@@ -2791,9 +2875,6 @@ def build_source(
                 flags += [
                     f"-DCMAKE_C_FLAGS={c_flags}{prof}",
                     f"-DCMAKE_CXX_FLAGS={c_flags}{prof}",
-                    "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=bfd",
-                    "-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=bfd",
-                    "-DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=bfd",
                 ]
                 pgo_active = True
                 if status_cb:
@@ -2808,7 +2889,15 @@ def build_source(
         ]
 
     use_lto = bool(cfg.get("lto", True))
-    if use_lto:
+    link_args, lto_ok = [], True
+    if not win:
+        link_cc = explicit_cxx or probe_cc or "cc"
+        link_cxx = explicit_cxx or probe_cxx or "c++"
+        link_args, lto_ok = pick_build_linker(link_cc, link_cxx, use_lto)
+        flags += link_args
+        if use_lto and not lto_ok and status_cb:
+            status_cb("LTO off: no linker here links LTO objects; doing a non-LTO build.")
+    if use_lto and lto_ok:
         flags.append("-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON")
     else:
         flags += ["-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF", "-DENABLE_LTO=OFF"]
@@ -2825,10 +2914,6 @@ def build_source(
                 "-DCMAKE_C_COMPILER_LAUNCHER=",
                 "-DCMAKE_CXX_COMPILER_LAUNCHER=",
             ]
-        if not pgo_active:
-            link_cc = explicit_cxx or probe_cc or "cc"
-            link_cxx = explicit_cxx or probe_cxx or "c++"
-            flags += pick_build_linker(link_cc, link_cxx)
 
     build_jobs = pick_build_jobs(use_lto or pgo_active)
     if status_cb:

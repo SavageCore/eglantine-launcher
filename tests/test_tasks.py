@@ -216,7 +216,18 @@ def test_build_source_uses_pgo_flags(monkeypatch, tmp_path, fake_home):
     monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: ("/opt/clang", "/opt/clang++"))
     monkeypatch.setattr(tasks, "_ensure_pgo_profile", lambda status_cb=None: Path("/tmp/eden.profdata"))
     monkeypatch.setattr(tasks, "_profile_readable", lambda cxx, prof: True)
-    monkeypatch.setattr(tasks, "pick_build_linker", lambda cc, cxx: [])
+    monkeypatch.setattr(
+        tasks,
+        "pick_build_linker",
+        lambda cc, cxx, want_lto=False: (
+            [
+                "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld",
+                "-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld",
+                "-DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld",
+            ],
+            True,
+        ),
+    )
     monkeypatch.setattr(tasks, "_mem_gb", lambda: 32)
 
     seen = {}
@@ -241,7 +252,7 @@ def test_build_source_uses_pgo_flags(monkeypatch, tmp_path, fake_home):
     cxx_flags = next(a for a in configure if a.startswith("-DCMAKE_CXX_FLAGS="))
     assert "-march=" in cxx_flags, "arch tuning must combine with the PGO profile flags"
     assert "-fuse-ld" not in cxx_flags, "linker flags must not leak into compile flags"
-    assert "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=bfd" in configure
+    assert "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld" in configure
     assert "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON" in configure
     assert "-DYUZU_BUILD_PRESET=custom" in configure
     build_cmd = seen["cmds"][1]
@@ -258,7 +269,7 @@ def test_build_source_skips_pgo_without_clang(monkeypatch, tmp_path, fake_home):
         tasks, "ensure_source", lambda cfg, status_cb=None, commit=None, **kw: (src, "abc123")
     )
     monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: (None, None))
-    monkeypatch.setattr(tasks, "pick_build_linker", lambda cc, cxx: [])
+    monkeypatch.setattr(tasks, "pick_build_linker", lambda cc, cxx, want_lto=False: ([], True))
     monkeypatch.setattr(tasks, "_mem_gb", lambda: 16)
 
     seen = {}
@@ -291,7 +302,7 @@ def test_build_source_lto_off_and_pinned_level(monkeypatch, tmp_path, fake_home)
         tasks, "ensure_source", lambda cfg, status_cb=None, commit=None, **kw: (src, "abc123")
     )
     monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: (None, None))
-    monkeypatch.setattr(tasks, "pick_build_linker", lambda cc, cxx: [])
+    monkeypatch.setattr(tasks, "pick_build_linker", lambda cc, cxx, want_lto=False: ([], True))
     monkeypatch.setattr(tasks, "_mem_gb", lambda: 16)
 
     seen = {}
@@ -414,8 +425,10 @@ def test_pick_build_linker_prefers_lld_for_clang(monkeypatch):
     monkeypatch.setattr(tasks, "_host_check_output", lambda cmd, **kw: "clang version 19.1.0")
     monkeypatch.setattr(tasks, "_host_which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(tasks, "_cc_accepts", lambda cc, *flags: True)
-    got = tasks.pick_build_linker("clang", "clang++")
-    assert "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld" in got
+    monkeypatch.setattr(tasks, "_sibling_tool_path", lambda cc, tool: None)
+    got, ok = tasks.pick_build_linker("clang", "clang++")
+    assert "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=/usr/bin/ld.lld" in got
+    assert ok is True
 
 
 def test_pick_build_linker_skips_lld_for_gcc(monkeypatch):
@@ -424,8 +437,108 @@ def test_pick_build_linker_skips_lld_for_gcc(monkeypatch):
     monkeypatch.setattr(tasks, "_host_check_output", lambda cmd, **kw: "g++ version 14")
     monkeypatch.setattr(tasks, "_host_which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(tasks, "_cc_accepts", lambda cc, *flags: True)
-    got = tasks.pick_build_linker("gcc", "g++")
-    assert "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold" in got
+    got, ok = tasks.pick_build_linker("gcc", "g++")
+    assert (got, ok) == (
+        [
+            "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=/usr/bin/mold",
+            "-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=/usr/bin/mold",
+            "-DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=/usr/bin/mold",
+        ],
+        True,
+    )
+
+
+def test_pick_build_linker_verifies_lto_with_trial_link(monkeypatch):
+    import eglantine_launcher.tasks as tasks
+
+    monkeypatch.setattr(tasks, "_host_check_output", lambda cmd, **kw: "clang version 19")
+    monkeypatch.setattr(tasks, "_sibling_tool_path", lambda cc, tool: None)
+    monkeypatch.setattr(tasks, "_host_which", lambda name: f"/usr/bin/{name}" if name == "ld.lld" else None)
+    monkeypatch.setattr(tasks, "_link_accepts", lambda cc, *flags: not any("ld.lld" in f for f in flags))
+    got, ok = tasks.pick_build_linker("clang", "clang++", True)
+    assert (got, ok) == ([], True)
+
+
+def test_pick_build_linker_prefers_working_system_lld(monkeypatch):
+    import eglantine_launcher.tasks as tasks
+
+    # Broken bundled lld shadows a working system one under a bare
+    # -fuse-ld=lld; full paths let each be tried on its own.
+    monkeypatch.setattr(tasks, "_host_check_output", lambda cmd, **kw: "clang version 23")
+    monkeypatch.setattr(tasks, "_sibling_tool_path", lambda cc, tool: "/opt/llvm23/bin/ld.lld")
+    monkeypatch.setattr(tasks, "_host_which", lambda name: "/usr/bin/ld.lld" if name == "ld.lld" else None)
+    monkeypatch.setattr(tasks, "_link_accepts", lambda cc, *flags: any("/usr/bin/ld.lld" in f for f in flags))
+    got, ok = tasks.pick_build_linker("/opt/llvm23/bin/clang", "/opt/llvm23/bin/clang++", True)
+    assert ok is True
+    assert "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=/usr/bin/ld.lld" in got
+
+
+def test_pick_build_linker_reports_unlinkable_lto(monkeypatch):
+    import eglantine_launcher.tasks as tasks
+
+    monkeypatch.setattr(tasks, "_host_check_output", lambda cmd, **kw: "clang version 23")
+    monkeypatch.setattr(tasks, "_sibling_tool_path", lambda cc, tool: None)
+    monkeypatch.setattr(tasks, "_host_which", lambda name: "/usr/bin/ld.lld" if name == "ld.lld" else None)
+    monkeypatch.setattr(tasks, "_link_accepts", lambda cc, *flags: False)
+    assert tasks.pick_build_linker("clang", "clang++", True) == ([], False)
+
+
+def test_build_source_disables_ipo_when_lto_wont_link(monkeypatch, tmp_path, fake_home):
+    import eglantine_launcher.tasks as tasks
+
+    src = tmp_path / "src"
+    src.mkdir()
+    monkeypatch.setattr(
+        tasks, "ensure_source", lambda cfg, status_cb=None, commit=None, **kw: (src, "abc123")
+    )
+    monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: ("/opt/clang", "/opt/clang++"))
+    monkeypatch.setattr(tasks, "_ensure_pgo_profile", lambda status_cb=None: Path("/tmp/eden.profdata"))
+    monkeypatch.setattr(tasks, "_profile_readable", lambda cxx, prof: True)
+    monkeypatch.setattr(tasks, "pick_build_linker", lambda cc, cxx, want_lto=False: ([], False))
+    monkeypatch.setattr(tasks, "_mem_gb", lambda: 16)
+
+    seen = {}
+    statuses = []
+
+    class FakeProc:
+        def __init__(self, cmd, **kwargs):
+            seen.setdefault("cmds", []).append(cmd)
+            self.stdout = iter([])
+            self.returncode = 0
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(tasks, "_host_popen", FakeProc)
+    cfg = {"project": "t", "pgo": True, "projects": [{"id": "t"}]}
+    tasks.build_source(cfg, commit="abc123", status_cb=statuses.append)
+    configure = seen["cmds"][0]
+    assert "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF" in configure
+    assert "-DENABLE_LTO=OFF" in configure
+    assert not any("fuse-ld" in a for a in configure)
+    assert any("LTO off" in s for s in statuses)
+
+
+def test_sibling_tool_finds_bundled_linker(monkeypatch, tmp_path):
+    import eglantine_launcher.tasks as tasks
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "clang++").write_text("#!/bin/sh\n")
+    (bindir / "ld.lld").write_text("#!/bin/sh\n")
+    (bindir / "ld.lld").chmod(0o755)
+    monkeypatch.setattr(tasks, "_host_which", lambda name: str(bindir / "clang++"))
+    assert tasks._sibling_tool(str(bindir / "clang++"), "ld.lld") is True
+    assert tasks._sibling_tool(str(bindir / "clang++"), "mold") is False
+
+
+def test_lto_flag_matches_compiler(monkeypatch):
+    import eglantine_launcher.tasks as tasks
+
+    monkeypatch.setattr(tasks, "_host_check_output", lambda cmd, **kw: "clang version 23")
+    assert tasks._lto_flag("clang++") == "-flto=thin"
+    monkeypatch.setattr(tasks, "_host_check_output", lambda cmd, **kw: "g++ version 14")
+    assert tasks._lto_flag("g++") == "-flto"
 
 
 def test_build_source_cancelled_before_configure(monkeypatch, tmp_path, fake_home):
