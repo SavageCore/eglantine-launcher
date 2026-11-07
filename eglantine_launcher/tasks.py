@@ -2518,10 +2518,10 @@ def pick_build_linker(cc, cxx, want_lto=False):
     """
     cands = _linker_candidates(cxx)
     if want_lto:
-        ld = first_working_lto_linker(cc, cxx)
-        if ld is None:
-            return [], False
-        return (_fuse_ld_args(ld) if ld else [], True)
+        for ld, ok, _ in probe_lto_linkers(cc, cxx):
+            if ok:
+                return (_fuse_ld_args(ld) if ld else [], True)
+        return [], False
     for ld in cands:
         if _cc_accepts(cc, f"-fuse-ld={ld}"):
             return _fuse_ld_args(ld), True
@@ -2530,12 +2530,9 @@ def pick_build_linker(cc, cxx, want_lto=False):
 
 def first_working_lto_linker(cc, cxx):
     """Full -fuse-ld= value that links LTO objects, "" for default, None if none."""
-    lto = _lto_flag(cxx)
-    for ld in _linker_candidates(cxx):
-        if _link_accepts(cc, lto, f"-fuse-ld={ld}"):
+    for ld, ok, _ in probe_lto_linkers(cc, cxx):
+        if ok:
             return ld
-    if _link_accepts(cc, lto):
-        return ""
     return None
 
 
@@ -2543,7 +2540,8 @@ def describe_lto_support(cfg):
     """(available, reason): whether LTO objects link with the build toolchain.
 
     Mirrors the compiler choice in build_source: PGO clang when enabled,
-    else the system compiler. Reason suits a tooltip.
+    else the system compiler. Reason suits a tooltip, with one line per
+    linker tried so a broken toolchain explains itself.
     """
     cc = cxx = None
     if (cfg or {}).get("pgo", True):
@@ -2551,15 +2549,12 @@ def describe_lto_support(cfg):
     if not cxx:
         cxx = _host_which("clang++") or _host_which("g++") or "c++"
         cc = _host_which("clang") or _host_which("gcc") or "cc"
-    ld = first_working_lto_linker(cc, cxx)
-    if ld is not None:
-        return True, f"LTO objects link with {ld or 'the default linker'} ({cxx})."
-    cands = _linker_candidates(cxx)
-    tried = ", ".join([*cands, "default linker"]) if cands else "the default linker"
-    return False, (
-        f"LTO objects fail to link with {cxx} (tried {tried}). "
-        "Install mold or a matching ld.lld to enable LTO."
-    )
+    report = probe_lto_linkers(cc, cxx)
+    for ld, ok, _ in report:
+        if ok:
+            return True, f"LTO objects link with {ld or 'the default linker'} ({cxx})."
+    lines = [f"- {ld or 'default linker'}: {err}" for ld, _, err in report]
+    return False, f"LTO objects fail to link with {cxx}:\n" + "\n".join(lines)
 
 
 def _linker_candidates(cxx):
@@ -2617,15 +2612,20 @@ def _fuse_ld_args(ld):
     ]
 
 
-def _link_accepts(cc, *flags):
-    """True when CC links a trivial program with FLAGS.
+def _link_result(cc, *flags):
+    """(ok, err): trial-link a trivial program; err is the first stderr line.
 
     Unverifiable compilers (binary not found, e.g. mocked paths in tests)
     return True so selection never blocks on probing alone; the real
     configure step still fails loudly on a truly missing compiler.
     """
+
+    def _short(text):
+        line = next((ln.strip() for ln in text.strip().splitlines() if ln.strip()), "")
+        return line[:200] or "link failed"
+
     if _host_which(cc) is None and not Path(str(cc)).exists():
-        return True
+        return True, ""
     try:
         with tempfile.TemporaryDirectory() as tmp:
             proc = _host_run(
@@ -2633,12 +2633,32 @@ def _link_accepts(cc, *flags):
                 input="int main(void){return 0;}\n",
                 text=True,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 timeout=180,
             )
-            return proc.returncode == 0
-    except Exception:
-        return False
+    except Exception as e:
+        return False, str(e)[:200]
+    if proc.returncode == 0:
+        return True, ""
+    return False, _short(proc.stderr or "")
+
+
+def _link_accepts(cc, *flags):
+    """True when CC links a trivial program with FLAGS."""
+    ok, _ = _link_result(cc, *flags)
+    return ok
+
+
+def probe_lto_linkers(cc, cxx):
+    """[(label, ok, err)] per linker tried, preference order; "" is default."""
+    lto = _lto_flag(cxx)
+    report = []
+    for ld in _linker_candidates(cxx):
+        ok, err = _link_result(cc, lto, f"-fuse-ld={ld}")
+        report.append((ld, ok, err))
+    ok, err = _link_result(cc, lto)
+    report.append(("", ok, err))
+    return report
 
 
 def _mem_gb():

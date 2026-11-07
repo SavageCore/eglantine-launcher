@@ -454,7 +454,11 @@ def test_pick_build_linker_verifies_lto_with_trial_link(monkeypatch):
     monkeypatch.setattr(tasks, "_host_check_output", lambda cmd, **kw: "clang version 19")
     monkeypatch.setattr(tasks, "_sibling_tool_path", lambda cc, tool: None)
     monkeypatch.setattr(tasks, "_host_which", lambda name: f"/usr/bin/{name}" if name == "ld.lld" else None)
-    monkeypatch.setattr(tasks, "_link_accepts", lambda cc, *flags: not any("ld.lld" in f for f in flags))
+    monkeypatch.setattr(
+        tasks,
+        "_link_result",
+        lambda cc, *flags: (not any("ld.lld" in f for f in flags), "mock lto link"),
+    )
     got, ok = tasks.pick_build_linker("clang", "clang++", True)
     assert (got, ok) == ([], True)
 
@@ -467,7 +471,11 @@ def test_pick_build_linker_prefers_working_system_lld(monkeypatch):
     monkeypatch.setattr(tasks, "_host_check_output", lambda cmd, **kw: "clang version 23")
     monkeypatch.setattr(tasks, "_sibling_tool_path", lambda cc, tool: "/opt/llvm23/bin/ld.lld")
     monkeypatch.setattr(tasks, "_host_which", lambda name: "/usr/bin/ld.lld" if name == "ld.lld" else None)
-    monkeypatch.setattr(tasks, "_link_accepts", lambda cc, *flags: any("/usr/bin/ld.lld" in f for f in flags))
+    monkeypatch.setattr(
+        tasks,
+        "_link_result",
+        lambda cc, *flags: (any("/usr/bin/ld.lld" in f for f in flags), "mock lto link"),
+    )
     got, ok = tasks.pick_build_linker("/opt/llvm23/bin/clang", "/opt/llvm23/bin/clang++", True)
     assert ok is True
     assert "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=/usr/bin/ld.lld" in got
@@ -479,7 +487,7 @@ def test_pick_build_linker_reports_unlinkable_lto(monkeypatch):
     monkeypatch.setattr(tasks, "_host_check_output", lambda cmd, **kw: "clang version 23")
     monkeypatch.setattr(tasks, "_sibling_tool_path", lambda cc, tool: None)
     monkeypatch.setattr(tasks, "_host_which", lambda name: "/usr/bin/ld.lld" if name == "ld.lld" else None)
-    monkeypatch.setattr(tasks, "_link_accepts", lambda cc, *flags: False)
+    monkeypatch.setattr(tasks, "_link_result", lambda cc, *flags: (False, "mock link failure"))
     assert tasks.pick_build_linker("clang", "clang++", True) == ([], False)
 
 
@@ -545,7 +553,7 @@ def test_describe_lto_support_ok(monkeypatch):
     import eglantine_launcher.tasks as tasks
 
     monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: ("/opt/clang", "/opt/clang++"))
-    monkeypatch.setattr(tasks, "first_working_lto_linker", lambda cc, cxx: "/usr/bin/ld.lld")
+    monkeypatch.setattr(tasks, "probe_lto_linkers", lambda cc, cxx: [("/usr/bin/ld.lld", True, "")])
     ok, reason = tasks.describe_lto_support({"pgo": True})
     assert ok is True
     assert "/usr/bin/ld.lld" in reason
@@ -558,11 +566,11 @@ def test_describe_lto_support_falls_back_to_system_compiler(monkeypatch):
     monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: (None, None))
     monkeypatch.setattr(tasks, "_host_which", lambda name: {"g++": "/usr/bin/g++"}.get(name))
 
-    def fake_first(cc, cxx):
+    def fake_probe(cc, cxx):
         seen["cxx"] = cxx
-        return ""
+        return [("", True, "")]
 
-    monkeypatch.setattr(tasks, "first_working_lto_linker", fake_first)
+    monkeypatch.setattr(tasks, "probe_lto_linkers", fake_probe)
     ok, reason = tasks.describe_lto_support({"pgo": False})
     assert ok is True
     assert seen["cxx"] == "/usr/bin/g++"
@@ -573,12 +581,20 @@ def test_describe_lto_support_unavailable(monkeypatch):
     import eglantine_launcher.tasks as tasks
 
     monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: ("/opt/clang", "/opt/clang++"))
-    monkeypatch.setattr(tasks, "first_working_lto_linker", lambda cc, cxx: None)
-    monkeypatch.setattr(tasks, "_linker_candidates", lambda cxx: ["/usr/bin/ld.lld"])
+    monkeypatch.setattr(
+        tasks,
+        "probe_lto_linkers",
+        lambda cc, cxx: [
+            ("/opt/llvm23/bin/ld.lld", False, "libicui18n.so.70: cannot open shared object file"),
+            ("/usr/bin/ld.lld", False, "Invalid summary version 14"),
+            ("", False, "LLVMgold.so: cannot open shared object file"),
+        ],
+    )
     ok, reason = tasks.describe_lto_support({"pgo": True})
     assert ok is False
     assert "/usr/bin/ld.lld" in reason
-    assert "mold" in reason
+    assert "Invalid summary version 14" in reason
+    assert "LLVMgold" in reason
 
 
 def test_build_source_cancelled_before_configure(monkeypatch, tmp_path, fake_home):
