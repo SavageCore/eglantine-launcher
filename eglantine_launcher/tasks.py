@@ -2207,6 +2207,159 @@ def _profile_readable(cxx, profile):
         return False
 
 
+def _cpu_flags():
+    """CPU feature flags from /proc/cpuinfo, or empty when unavailable."""
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("flags"):
+                    return line.split(":", 1)[1]
+    except Exception:
+        pass
+    return ""
+
+
+def _has_all(flags, *names):
+    """True when every NAME is in FLAGS (abm also matches lzcnt)."""
+    for name in names:
+        if name == "abm":
+            if " abm " not in flags and " lzcnt " not in flags:
+                return False
+        elif f" {name} " not in flags:
+            return False
+    return True
+
+
+def detect_host_cpu_level():
+    """Host x86-64 microarchitecture level (1-4)."""
+    import re
+
+    for ld in ("/lib64/ld-linux-x86-64.so.2", "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"):
+        try:
+            if not os.path.exists(ld):
+                continue
+            out = _host_check_output([ld, "--help"], text=True, stderr=subprocess.DEVNULL, timeout=10)
+        except Exception:
+            continue
+        levels = re.findall(r"x86-64-v([234]) \(supported", out)
+        if levels:
+            return max(int(v) for v in levels)
+        if "x86-64-v" in out:
+            return 1
+    flags = f" {_cpu_flags()} "
+    level = 1
+    if _has_all(flags, "cx16", "lahf_lm", "popcnt", "sse4_1", "sse4_2", "ssse3"):
+        level = 2
+    if level == 2 and _has_all(flags, "avx", "avx2", "bmi1", "bmi2", "f16c", "fma", "abm", "movbe", "xsave"):
+        level = 3
+    if level == 3 and _has_all(flags, "avx512f", "avx512bw", "avx512cd", "avx512dq", "avx512vl"):
+        level = 4
+    return level
+
+
+def _cc_accepts(compiler, *flags):
+    """True when COMPILER compiles a trivial program with FLAGS.
+
+    Unverifiable compilers (binary not found, e.g. mocked paths in tests)
+    return True so flag selection never blocks on probing alone; the real
+    configure step still fails loudly on a truly missing compiler.
+    """
+    if _host_which(compiler) is None and not Path(str(compiler)).exists():
+        return True
+    try:
+        proc = _host_run(
+            [compiler, *flags, "-x", "c", "-", "-o", "/dev/null"],
+            input="int main(void){return 0;}\n",
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def select_arch_flags(cc, cpu_level="auto"):
+    """(ARCH_FLAGS, LABEL) for -march=x86-64-vN plus -mtune.
+
+    cpu_level is auto, native, or 1-4. Native tunes for this exact machine
+    but the binary may not run elsewhere; vN levels stay portable to any
+    machine supporting that level.
+    """
+    level = str(cpu_level or "auto").lower().lstrip("v")
+    if level == "native":
+        if _cc_accepts(cc, "-march=native"):
+            return "-march=native -mtune=native", "native"
+        level = "auto"
+    if level not in ("auto", "1", "2", "3", "4"):
+        raise RuntimeError(f"Unknown CPU level: {cpu_level} (expected auto, native, or 1-4)")
+    host = detect_host_cpu_level()
+    want = host if level == "auto" else int(level)
+    if want > host and level != "auto":
+        raise RuntimeError(f"Host CPU only runs x86-64-v{host}; pick v{host} or lower, not v{want}.")
+    march = f"x86-64-v{want}" if want > 1 else "x86-64"
+    while not _cc_accepts(cc, f"-march={march}"):
+        want -= 1
+        if want < 1:
+            raise RuntimeError(f"{cc} rejects -march=x86-64")
+        march = f"x86-64-v{want}" if want > 1 else "x86-64"
+    tune = "native" if _cc_accepts(cc, "-mtune=native") else "generic"
+    return f"-march={march} -mtune={tune}", f"v{want}"
+
+
+def pick_build_linker(cc, cxx):
+    """Linker flags preferring lld with clang, else mold when usable."""
+    try:
+        out = _host_check_output([cxx, "--version"], text=True, stderr=subprocess.STDOUT, timeout=30)
+        is_clang = "clang" in out.lower()
+    except Exception:
+        is_clang = False
+    if is_clang and _host_which("ld.lld") and _cc_accepts(cc, "-fuse-ld=lld"):
+        return [
+            "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld",
+            "-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld",
+            "-DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld",
+        ]
+    if _host_which("mold") and _cc_accepts(cc, "-fuse-ld=mold"):
+        return [
+            "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold",
+            "-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=mold",
+            "-DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=mold",
+        ]
+    return []
+
+
+def _mem_gb():
+    """Total RAM in GiB, falling back to 8 when unreadable."""
+    try:
+        with open("/proc/meminfo", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return max(1, int(line.split()[1]) // 1024 // 1024)
+    except Exception:
+        pass
+    return 8
+
+
+def pick_build_jobs(use_lto):
+    """Parallel jobs from core count and RAM (LTO needs ~3 GB per job)."""
+    cores = os.cpu_count() or 1
+    per_job = 3 if use_lto else 2
+    return max(1, min(cores, _mem_gb() // per_job))
+
+
+def _cmake_cached_cxx(build_dir):
+    """CMAKE_CXX_COMPILER from a previous configure, or None."""
+    try:
+        for line in (Path(build_dir) / "CMakeCache.txt").read_text().splitlines():
+            if line.startswith("CMAKE_CXX_COMPILER:"):
+                return line.split("=", 1)[1].strip() or None
+    except Exception:
+        pass
+    return None
+
+
 def _kill_proc(proc):
     try:
         proc.terminate()
@@ -2353,17 +2506,32 @@ def build_source(
     src, commit = ensure_source(
         cfg, status_cb, commit=commit, cancelled=cancelled, log_cb=log_cb, progress_cb=progress_cb
     )
-    binary_name = "eglantine.exe" if is_windows() else "eglantine"
-    binary = src / "build" / "release" / "bin" / binary_name
+    win = is_windows()
+    binary_name = "eglantine.exe" if win else "eglantine"
+    for tool in ("cmake", "ninja", "git", "g++"):
+        if _host_which(tool) is None:
+            raise RuntimeError(f"Missing required tool: {tool}")
+
+    # CPU tuning (Linux only): detect the host x86-64 level and build for
+    # it. Each level gets its own build dir so differently-tuned objects
+    # never share a CMake cache.
+    arch_flags, level_label = "", "generic"
+    if not win:
+        probe_cc, probe_cxx = _find_pgo_clang() if cfg.get("pgo", True) else (None, None)
+        if not probe_cxx:
+            probe_cxx = _host_which("clang++") or _host_which("g++") or "c++"
+            probe_cc = _host_which("clang") or _host_which("gcc") or "cc"
+        arch_flags, level_label = select_arch_flags(probe_cc, cfg.get("cpu_level", "auto"))
+        if status_cb:
+            status_cb(f"CPU target: x86-64-{level_label} ({arch_flags}).")
+
+    build_dir = src / "build" / ("release" if win else f"release-{level_label}")
+    binary = build_dir / "bin" / binary_name
     if get_project_last_built(cfg) == commit and binary.exists():
         if status_cb:
             status_cb("Source already up to date.")
         record_source_build(cfg, commit)
         return binary
-    for tool in ("cmake", "ninja", "git", "g++"):
-        if _host_which(tool) is None:
-            raise RuntimeError(f"Missing required tool: {tool}")
-    build_dir = src / "build" / "release"
     flags = [
         "-DCMAKE_BUILD_TYPE=Release",
         "-DBUILD_TESTING=OFF",
@@ -2378,8 +2546,9 @@ def build_source(
         "-DENABLE_UPDATE_CHECKER=OFF",
         "-DUSE_DISCORD_PRESENCE=OFF",
         "-DENABLE_WERROR=OFF",
+        "-DYUZU_BUILD_PRESET=custom",
     ]
-    if is_windows():
+    if win:
         flags.append("-DYUZU_USE_BUNDLED_QT=ON")
         if shutil.which("clang-cl") or shutil.which("clang-cl.exe"):
             flags += ["-DCMAKE_C_COMPILER=clang-cl", "-DCMAKE_CXX_COMPILER=clang-cl"]
@@ -2392,8 +2561,9 @@ def build_source(
     else:
         flags.append("-DYUZU_USE_BUNDLED_QT=OFF")
 
-    build_jobs = None
-    if cfg.get("pgo", True) and not is_windows():
+    explicit_cxx = None
+    pgo_active = False
+    if cfg.get("pgo", True) and not win:
         cc, cxx = _find_pgo_clang()
         if not cxx:
             if status_cb:
@@ -2411,34 +2581,68 @@ def build_source(
                         f"delete {profile} to re-download, or turn PGO off."
                     )
             else:
+                explicit_cxx = cxx
                 flags += [f"-DCMAKE_C_COMPILER={cc}", f"-DCMAKE_CXX_COMPILER={cxx}"]
                 # NOTE: -fuse-ld goes in linker flags only. In CFLAGS it warns
                 # "unused during compilation" on every TU, which is fatal for
                 # externals built with -Werror (e.g. sirit).
+                c_flags = f"{arch_flags} " if arch_flags else ""
                 prof = (
                     f"-fprofile-use={profile} "
                     "-Wno-backend-plugin -Wno-profile-instr-unprofiled "
                     "-Wno-profile-instr-out-of-date"
                 )
                 flags += [
-                    f"-DCMAKE_C_FLAGS={prof}",
-                    f"-DCMAKE_CXX_FLAGS={prof}",
+                    f"-DCMAKE_C_FLAGS={c_flags}{prof}",
+                    f"-DCMAKE_CXX_FLAGS={c_flags}{prof}",
                     "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=bfd",
                     "-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=bfd",
                     "-DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=bfd",
                 ]
-                if (os.cpu_count() or 1) > 6:
-                    build_jobs = 6  # PGO TUs use far more RAM; avoids swap death
+                pgo_active = True
                 if status_cb:
                     status_cb(f"PGO build with {cxx}, profile {profile.name}.")
-    elif cfg.get("pgo", True) and is_windows() and status_cb:
+    elif cfg.get("pgo", True) and win and status_cb:
         status_cb("PGO source builds are Linux-only for now; doing a regular build.")
+
+    if not pgo_active and arch_flags:
+        flags += [
+            f"-DCMAKE_C_FLAGS={arch_flags}",
+            f"-DCMAKE_CXX_FLAGS={arch_flags}",
+        ]
+
+    use_lto = bool(cfg.get("lto", True))
+    if use_lto:
+        flags.append("-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON")
+    else:
+        flags += ["-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF", "-DENABLE_LTO=OFF"]
+
+    if not win:
+        if _host_which("ccache"):
+            flags += [
+                "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
+                "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
+            ]
+        else:
+            # Clear a launcher cached by an earlier run; the binary may be gone.
+            flags += [
+                "-DCMAKE_C_COMPILER_LAUNCHER=",
+                "-DCMAKE_CXX_COMPILER_LAUNCHER=",
+            ]
+        if not pgo_active:
+            link_cc = explicit_cxx or probe_cc or "cc"
+            link_cxx = explicit_cxx or probe_cxx or "c++"
+            flags += pick_build_linker(link_cc, link_cxx)
+
+    build_jobs = pick_build_jobs(use_lto or pgo_active)
+    if status_cb:
+        status_cb(f"Building with {build_jobs} jobs...")
 
     # tool checks
     for tool in ("cmake", "ninja", "git"):
         if _host_which(tool) is None and _host_which(tool + ".exe") is None:
             raise RuntimeError(f"Missing required tool: {tool}")
-    if is_windows():
+    if win:
         if not (
             shutil.which("cl")
             or shutil.which("cl.exe")
@@ -2448,6 +2652,26 @@ def build_source(
             raise RuntimeError(
                 "Missing C++ compiler (cl.exe or clang-cl.exe). Run from a Developer Command Prompt."
             )
+
+    # CMake caches the compiler on the first configure and ignores CC/CXX
+    # after that. If this build dir was configured with a different
+    # compiler, drop the cache so flags and linker below still match.
+    if explicit_cxx and (build_dir / "CMakeCache.txt").exists():
+        cached = _cmake_cached_cxx(build_dir)
+        try:
+            same = cached and os.path.realpath(cached) == os.path.realpath(
+                _host_which(explicit_cxx) or explicit_cxx
+            )
+        except Exception:
+            same = False
+        if not same:
+            if status_cb:
+                status_cb(f"Build dir used {cached}; resetting CMake cache for {explicit_cxx}.")
+            try:
+                (build_dir / "CMakeCache.txt").unlink()
+            except FileNotFoundError:
+                pass
+            shutil.rmtree(build_dir / "CMakeFiles", ignore_errors=True)
 
     if status_cb:
         status_cb("Configuring source build...")
@@ -2463,13 +2687,35 @@ def build_source(
     _stream_proc(proc, log_cb=log_cb, cancelled=cancelled, on_proc=on_proc)
     if proc.returncode != 0:
         raise RuntimeError(f"Configure failed (exit {proc.returncode}); see log above.")
+    # Final guard: the compiler CMake actually used must be the one planned.
+    # (Skipped when there is no cache to read, e.g. a failed configure.)
+    if explicit_cxx:
+        used_cxx = _cmake_cached_cxx(build_dir)
+        if used_cxx:
+            try:
+                mismatch = os.path.realpath(used_cxx) != os.path.realpath(
+                    _host_which(explicit_cxx) or explicit_cxx
+                )
+            except Exception:
+                mismatch = True
+            if mismatch:
+                raise RuntimeError(
+                    f"CMake is using {used_cxx}, expected {explicit_cxx}; delete {build_dir} and rebuild."
+                )
     if status_cb:
         status_cb("Building (this may take a while)...")
     if cancelled and cancelled():
         raise BuildCancelled("Build cancelled.")
-    build_cmd = ["cmake", "--build", str(build_dir), "--target", "yuzu", "yuzu-cmd", "--parallel"]
-    if build_jobs:
-        build_cmd.append(str(build_jobs))
+    build_cmd = [
+        "cmake",
+        "--build",
+        str(build_dir),
+        "--target",
+        "yuzu",
+        "yuzu-cmd",
+        "--parallel",
+        str(build_jobs),
+    ]
     proc = _host_popen(
         build_cmd,
         stdout=subprocess.PIPE,

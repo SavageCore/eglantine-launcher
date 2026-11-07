@@ -615,6 +615,8 @@ def default_config():
         # Turning the Settings switch on runs a dependency check first.
         "source_enabled": False,
         "pgo": True,
+        "lto": True,
+        "cpu_level": "auto",
         "install_dir": str(_data_home()),
         "source_dir": str(_data_home() / "src"),
         "last_release_tag": None,

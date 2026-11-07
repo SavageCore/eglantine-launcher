@@ -216,6 +216,8 @@ def test_build_source_uses_pgo_flags(monkeypatch, tmp_path, fake_home):
     monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: ("/opt/clang", "/opt/clang++"))
     monkeypatch.setattr(tasks, "_ensure_pgo_profile", lambda status_cb=None: Path("/tmp/eden.profdata"))
     monkeypatch.setattr(tasks, "_profile_readable", lambda cxx, prof: True)
+    monkeypatch.setattr(tasks, "pick_build_linker", lambda cc, cxx: [])
+    monkeypatch.setattr(tasks, "_mem_gb", lambda: 32)
 
     seen = {}
 
@@ -237,10 +239,14 @@ def test_build_source_uses_pgo_flags(monkeypatch, tmp_path, fake_home):
     assert "-DCMAKE_CXX_COMPILER=/opt/clang++" in configure
     assert any(a.startswith("-DCMAKE_CXX_FLAGS=") and "-fprofile-use=" in a for a in configure)
     cxx_flags = next(a for a in configure if a.startswith("-DCMAKE_CXX_FLAGS="))
+    assert "-march=" in cxx_flags, "arch tuning must combine with the PGO profile flags"
     assert "-fuse-ld" not in cxx_flags, "linker flags must not leak into compile flags"
     assert "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=bfd" in configure
+    assert "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON" in configure
+    assert "-DYUZU_BUILD_PRESET=custom" in configure
     build_cmd = seen["cmds"][1]
-    assert build_cmd[-2:] == ["--parallel", "6"]
+    assert build_cmd[-2:] == ["--parallel", "10"]
+    assert any("release-v" in a for a in seen["cmds"][0]), "build dir must carry the CPU level"
 
 
 def test_build_source_skips_pgo_without_clang(monkeypatch, tmp_path, fake_home):
@@ -252,6 +258,8 @@ def test_build_source_skips_pgo_without_clang(monkeypatch, tmp_path, fake_home):
         tasks, "ensure_source", lambda cfg, status_cb=None, commit=None, **kw: (src, "abc123")
     )
     monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: (None, None))
+    monkeypatch.setattr(tasks, "pick_build_linker", lambda cc, cxx: [])
+    monkeypatch.setattr(tasks, "_mem_gb", lambda: 16)
 
     seen = {}
 
@@ -268,8 +276,156 @@ def test_build_source_skips_pgo_without_clang(monkeypatch, tmp_path, fake_home):
     cfg = {"project": "t", "pgo": True, "projects": [{"id": "t"}]}
     tasks.build_source(cfg, commit="abc123")
     configure = seen["cmds"][0]
-    assert not any("CMAKE_CXX_COMPILER" in a for a in configure)
+    assert not any(a.startswith("-DCMAKE_CXX_COMPILER=") and "LAUNCHER" not in a for a in configure)
     assert not any("fprofile-use" in a for a in configure)
+    assert any(a.startswith("-DCMAKE_C_FLAGS=-march=") for a in configure)
+    assert "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON" in configure
+
+
+def test_build_source_lto_off_and_pinned_level(monkeypatch, tmp_path, fake_home):
+    import eglantine_launcher.tasks as tasks
+
+    src = tmp_path / "src"
+    src.mkdir()
+    monkeypatch.setattr(
+        tasks, "ensure_source", lambda cfg, status_cb=None, commit=None, **kw: (src, "abc123")
+    )
+    monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: (None, None))
+    monkeypatch.setattr(tasks, "pick_build_linker", lambda cc, cxx: [])
+    monkeypatch.setattr(tasks, "_mem_gb", lambda: 16)
+
+    seen = {}
+
+    class FakeProc:
+        def __init__(self, cmd, **kwargs):
+            seen.setdefault("cmds", []).append(cmd)
+            self.stdout = iter([])
+            self.returncode = 0
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(tasks, "_host_popen", FakeProc)
+    cfg = {"project": "t", "pgo": False, "lto": False, "cpu_level": "1", "projects": [{"id": "t"}]}
+    tasks.build_source(cfg, commit="abc123")
+    configure = seen["cmds"][0]
+    assert "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF" in configure
+    assert "-DENABLE_LTO=OFF" in configure
+    assert f"-B {src / 'build' / 'release-v1'}" in " ".join(configure)
+    assert "-DCMAKE_C_FLAGS=-march=x86-64 -mtune=native" in configure or any(
+        a.startswith("-DCMAKE_C_FLAGS=-march=x86-64 ") for a in configure
+    )
+
+
+def test_build_source_resets_stale_compiler_cache(monkeypatch, tmp_path, fake_home):
+    import eglantine_launcher.tasks as tasks
+
+    src = tmp_path / "src"
+    src.mkdir()
+    monkeypatch.setattr(
+        tasks, "ensure_source", lambda cfg, status_cb=None, commit=None, **kw: (src, "abc123")
+    )
+    monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: ("/new/clang", "/new/clang++"))
+    monkeypatch.setattr(tasks, "_ensure_pgo_profile", lambda status_cb=None: Path("/tmp/eden.profdata"))
+    monkeypatch.setattr(tasks, "_profile_readable", lambda cxx, prof: True)
+    monkeypatch.setattr(tasks, "_mem_gb", lambda: 16)
+
+    arch_flags, label = tasks.select_arch_flags("/new/clang", "auto")
+    assert arch_flags  # sanity: probe path resolves without a real compiler
+    stale = src / "build" / f"release-{label}"
+    (stale / "CMakeFiles").mkdir(parents=True)
+    (stale / "CMakeCache.txt").write_text("CMAKE_CXX_COMPILER:FILEPATH=/old/clang++\n")
+
+    class FakeProc:
+        def __init__(self, cmd, **kwargs):
+            self.stdout = iter([])
+            self.returncode = 0
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(tasks, "_host_popen", FakeProc)
+    cfg = {"project": "t", "pgo": True, "projects": [{"id": "t"}]}
+    tasks.build_source(cfg, commit="abc123")
+    assert not (stale / "CMakeCache.txt").exists()
+    assert not (stale / "CMakeFiles").exists()
+
+
+def test_detect_host_cpu_level_from_loader(monkeypatch):
+    import eglantine_launcher.tasks as tasks
+
+    monkeypatch.setattr("os.path.exists", lambda p: True)
+    monkeypatch.setattr(tasks, "_host_check_output", lambda cmd, **kw: "x86-64-v3 (supported, searched)")
+    assert tasks.detect_host_cpu_level() == 3
+
+
+def test_detect_host_cpu_level_from_flags(monkeypatch):
+    import eglantine_launcher.tasks as tasks
+
+    monkeypatch.setattr("os.path.exists", lambda p: False)
+    monkeypatch.setattr(
+        tasks,
+        "_cpu_flags",
+        lambda: "cx16 lahf_lm popcnt sse4_1 sse4_2 ssse3 avx avx2 bmi1 bmi2 f16c fma abm movbe xsave",
+    )
+    assert tasks.detect_host_cpu_level() == 3
+    monkeypatch.setattr(tasks, "_cpu_flags", lambda: "fpu vme")
+    assert tasks.detect_host_cpu_level() == 1
+
+
+def test_select_arch_flags_rejects_above_host(monkeypatch):
+    import pytest
+
+    import eglantine_launcher.tasks as tasks
+
+    monkeypatch.setattr(tasks, "detect_host_cpu_level", lambda: 2)
+    with pytest.raises(RuntimeError):
+        tasks.select_arch_flags("cc", "4")
+
+
+def test_select_arch_flags_native_fallback(monkeypatch):
+    import eglantine_launcher.tasks as tasks
+
+    monkeypatch.setattr(tasks, "detect_host_cpu_level", lambda: 3)
+
+    def fake_accepts(compiler, *flags):
+        return "-march=native" not in flags
+
+    monkeypatch.setattr(tasks, "_cc_accepts", fake_accepts)
+    flags, label = tasks.select_arch_flags("cc", "native")
+    assert label == "v3"
+    assert flags.startswith("-march=x86-64-v3")
+
+
+def test_pick_build_jobs_scales_with_ram(monkeypatch):
+    import eglantine_launcher.tasks as tasks
+
+    monkeypatch.setattr("os.cpu_count", lambda: 16)
+    monkeypatch.setattr(tasks, "_mem_gb", lambda: 32)
+    assert tasks.pick_build_jobs(True) == 10
+    assert tasks.pick_build_jobs(False) == 16
+    monkeypatch.setattr(tasks, "_mem_gb", lambda: 4)
+    assert tasks.pick_build_jobs(True) == 1
+
+
+def test_pick_build_linker_prefers_lld_for_clang(monkeypatch):
+    import eglantine_launcher.tasks as tasks
+
+    monkeypatch.setattr(tasks, "_host_check_output", lambda cmd, **kw: "clang version 19.1.0")
+    monkeypatch.setattr(tasks, "_host_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(tasks, "_cc_accepts", lambda cc, *flags: True)
+    got = tasks.pick_build_linker("clang", "clang++")
+    assert "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld" in got
+
+
+def test_pick_build_linker_skips_lld_for_gcc(monkeypatch):
+    import eglantine_launcher.tasks as tasks
+
+    monkeypatch.setattr(tasks, "_host_check_output", lambda cmd, **kw: "g++ version 14")
+    monkeypatch.setattr(tasks, "_host_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(tasks, "_cc_accepts", lambda cc, *flags: True)
+    got = tasks.pick_build_linker("gcc", "g++")
+    assert "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold" in got
 
 
 def test_build_source_cancelled_before_configure(monkeypatch, tmp_path, fake_home):

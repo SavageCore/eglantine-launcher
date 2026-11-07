@@ -233,6 +233,21 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.pgo_row.set_active(bool(self.cfg.get("pgo", True)))
         group.add(self.pgo_row)
 
+        self.lto_row = Adw.SwitchRow(title="LTO build (default)")
+        self.lto_row.set_subtitle("Link-time optimization: faster binary, slower build")
+        self.lto_row.set_active(bool(self.cfg.get("lto", True)))
+        group.add(self.lto_row)
+
+        self.cpu_row = Adw.ComboRow(title="CPU target")
+        self.cpu_row.set_subtitle("Instruction set for source builds (per-CPU build dir)")
+        self._cpu_values = ["auto", "native", "4", "3", "2", "1"]
+        self.cpu_row.set_model(Gtk.StringList.new(["Auto", "Native", "v4", "v3", "v2", "v1"]))
+        try:
+            self.cpu_row.set_selected(self._cpu_values.index(str(self.cfg.get("cpu_level", "auto"))))
+        except ValueError:
+            self.cpu_row.set_selected(0)
+        group.add(self.cpu_row)
+
         box.append(group)
 
         self.project_row.connect("notify::selected", self._on_selector_changed)
@@ -293,8 +308,10 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.action_bar.pack_end(self.stop_btn)
         self.action_bar.pack_end(self.launch_btn)
 
-        # persist pgo choice immediately (project/mode persist via _on_selector_changed)
+        # persist pgo/lto/cpu choices immediately (project/mode persist via _on_selector_changed)
         self.pgo_row.connect("notify::active", lambda *_: self._save_choices())
+        self.lto_row.connect("notify::active", lambda *_: self._save_choices())
+        self.cpu_row.connect("notify::selected", lambda *_: self._save_choices())
 
         # Banner sits edge-to-edge above the margined content; toasts
         # overlay everything transiently; Launch lives in a proper
@@ -1017,6 +1034,11 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.cfg["project"] = info.get("id", self.cfg.get("project"))
         self.cfg["mode"] = self._mode_from_row()
         self.cfg["pgo"] = bool(self.pgo_row.get_active())
+        self.cfg["lto"] = bool(self.lto_row.get_active())
+        try:
+            self.cfg["cpu_level"] = self._cpu_values[int(self.cpu_row.get_selected())]
+        except Exception:
+            self.cfg["cpu_level"] = "auto"
         save_config(self.cfg)
         self._launch_mode = self.cfg["mode"]
         self._start_worker()
@@ -1643,6 +1665,11 @@ class LauncherWindow(Adw.ApplicationWindow):
             # persist only the explicit choice; never flip it due to a failed release check
             self.cfg["mode"] = self._mode_from_row()
         self.cfg["pgo"] = bool(self.pgo_row.get_active())
+        self.cfg["lto"] = bool(self.lto_row.get_active())
+        try:
+            self.cfg["cpu_level"] = self._cpu_values[int(self.cpu_row.get_selected())]
+        except Exception:
+            self.cfg["cpu_level"] = "auto"
         save_config(self.cfg)
 
     def on_settings(self, *_args):
