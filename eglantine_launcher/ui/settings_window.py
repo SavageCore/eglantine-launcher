@@ -271,6 +271,7 @@ class ProjectEditDialog(Adw.Window):
         settings_group.add(self.config_key_entry)
         settings_page.append(settings_group)
         settings_page.append(self._build_env_group())
+        settings_page.append(self._build_env_form())
 
         if self._pid:
             self._layout = SidebarLayout([("settings", "Settings"), ("storage", "Storage"), ("tags", "Tags")])
@@ -652,7 +653,12 @@ class ProjectEditDialog(Adw.Window):
         self.config_picker_row.set_visible(len(self.config_picker_keys) > 1)
 
     def _build_env_group(self):
-        """Per-source extra environment variables, staged until Save."""
+        """Per-source extra environment variables, staged until Save.
+
+        The group holds only Adw rows; the add form is a separate box
+        below it (a plain Gtk box inside a PreferencesGroup gets no
+        margins and crowds the rows above).
+        """
         group = Adw.PreferencesGroup(
             title="Environment variables",
             description="Extra variables set on this source's emulator process at "
@@ -662,7 +668,11 @@ class ProjectEditDialog(Adw.Window):
         self._env_group = group
         self._env_rows = []
         self._refresh_env_rows()
+        return group
+
+    def _build_env_form(self):
         form = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        form.set_margin_top(4)
         entry_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self._env_name_entry = Gtk.Entry()
         self._env_name_entry.set_placeholder_text("Name, e.g. EDEN_MKW_MOVIE_UNPACED")
@@ -685,8 +695,7 @@ class ProjectEditDialog(Adw.Window):
         self._env_error.set_wrap(True)
         self._env_error.set_xalign(0)
         form.append(self._env_error)
-        group.add(form)
-        return group
+        return form
 
     def _refresh_env_rows(self):
         for row in getattr(self, "_env_rows", []):
