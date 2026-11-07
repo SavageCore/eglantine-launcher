@@ -108,7 +108,7 @@ def test_main_window_restores_saved_size(needs_display, fake_home, monkeypatch):
     app = _make_app()
     window = LauncherWindow(app)
     try:
-        assert window.get_default_size() == (980, 620)
+        assert window.get_default_size() == (1280, 620)
         monkeypatch.setattr(window, "get_width", lambda: 500)
         monkeypatch.setattr(window, "get_height", lambda: 650)
         window._save_window_size()

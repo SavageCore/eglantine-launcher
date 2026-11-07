@@ -137,13 +137,13 @@ class LauncherWindow(Adw.ApplicationWindow):
         # become links to the canonical one so saves stay global.
         migrate_emulator_dirs(self.cfg)
         try:
-            win_w = int(self.cfg.get("window_width") or 980)
+            win_w = int(self.cfg.get("window_width") or 1280)
             win_h = self.cfg.get("window_height")
             win_h = int(win_h) if win_h else 620
         except (TypeError, ValueError):
-            win_w, win_h = 980, 620
+            win_w, win_h = 1280, 620
         # Side-by-side layout needs width: clamp older saved sizes up.
-        win_w = max(win_w, 900)
+        win_w = max(win_w, 1100)
         self.set_default_size(win_w, win_h)
         self.auto = auto
         self._busy = False
@@ -309,7 +309,9 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.action_row.append(self.launch_btn)
         left.append(self.action_row)
 
-        # Right column: always-visible build log with its own toast scope.
+        # Right column: always-visible build log with a single status line.
+        # Transient statuses replace each other here instead of stacking
+        # as toasts over the log.
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         right.set_hexpand(True)
         right.set_vexpand(True)
@@ -335,6 +337,15 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.log_row.append(self.copy_btn)
         right.append(self.log_row)
 
+        self.status_label = Gtk.Label(label="")
+        self.status_label.set_halign(Gtk.Align.START)
+        self.status_label.set_valign(Gtk.Align.CENTER)
+        self.status_label.set_hexpand(True)
+        self.status_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.status_label.add_css_class("dim-label")
+        self.status_label.set_visible(False)
+        right.append(self.status_label)
+
         self.log_view = Gtk.TextView()
         self.log_view.set_editable(False)
         self.log_view.set_monospace(True)
@@ -345,13 +356,17 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.log_scrolled.set_vexpand(True)
         self.log_scrolled.set_hexpand(True)
         self.log_scrolled.set_min_content_height(280)
-        self.log_scrolled.set_min_content_width(360)
+        # Size the log to a terminal-like width: classic terminals are
+        # 80 columns, modern ones usually 100-120. Target 100 monospace
+        # "M"s so typical build lines fit without horizontal scrolling.
+        try:
+            _layout = self.log_view.create_pango_layout("M" * 100)
+            _lw, _lh = _layout.get_pixel_size()
+            self.log_scrolled.set_min_content_width(_lw + 24)
+        except Exception:
+            self.log_scrolled.set_min_content_width(760)
 
-        self.toast_overlay = Adw.ToastOverlay()
-        self.toast_overlay.set_child(self.log_scrolled)
-        self.toast_overlay.set_vexpand(True)
-        self.toast_overlay.set_hexpand(True)
-        right.append(self.toast_overlay)
+        right.append(self.log_scrolled)
 
         main = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         main.set_margin_top(12)
@@ -370,8 +385,8 @@ class LauncherWindow(Adw.ApplicationWindow):
         self._lto_probe_seq = 0
         self._schedule_lto_probe()
 
-        # Banner sits edge-to-edge above the margined content; toasts
-        # overlay only the log panel so they never cover the controls.
+        # Banner sits edge-to-edge above the margined content; transient
+        # statuses show as a single line above the log, never covering it.
         # Left column stays top-aligned: the pill cloud below Project varies
         # in height per project, and centering would shift the whole card up
         # and down on every selection change.
@@ -433,21 +448,28 @@ class LauncherWindow(Adw.ApplicationWindow):
                 GLib.idle_add(self._hide_banner_if_seq, seq)
         elif text:
 
-            def _toast():
-                toast = Adw.Toast.new(text)
-                toast.set_timeout(4)
-                self.toast_overlay.add_toast(toast)
+            def _show():
+                self.status_label.set_text(text)
+                self.status_label.set_tooltip_text(text)
+                self.status_label.set_visible(True)
 
-            GLib.idle_add(_toast)
+            GLib.idle_add(_show)
             GLib.timeout_add_seconds(4, lambda: self._clear_status(seq))
 
     def _dismiss_toasts(self):
-        # Successful launch leaves no stale toasts behind (e.g. "Fetching
+        # Successful launch leaves no stale status behind (e.g. "Fetching
         # source updates..." / "Source already up to date." from the
         # already-built fast path). Bumping the seq also invalidates pending
         # _clear_status timeouts so they can't hide a later banner.
+        # Name kept for the launch-now scheduling test.
         self._status_seq = getattr(self, "_status_seq", 0) + 1
-        self.toast_overlay.dismiss_all()
+        GLib.idle_add(self._hide_status_label)
+        return False
+
+    def _hide_status_label(self):
+        self.status_label.set_visible(False)
+        self.status_label.set_text("")
+        self.status_label.set_tooltip_text("")
         return False
 
     def _hide_banner_if_seq(self, seq):
@@ -456,6 +478,10 @@ class LauncherWindow(Adw.ApplicationWindow):
         return False
 
     def _clear_status(self, seq):
+        if getattr(self, "_status_seq", 0) == seq:
+            self.status_label.set_visible(False)
+            self.status_label.set_text("")
+            self.status_label.set_tooltip_text("")
         return self._hide_banner_if_seq(seq)
 
     def _set_progress(self, frac):

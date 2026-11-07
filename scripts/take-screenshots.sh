@@ -157,7 +157,7 @@ import json
 from pathlib import Path
 cfg = Path("$SHOT_HOME") / ".config" / "eglantine-launcher" / "config.json"
 data = json.loads(cfg.read_text()) if cfg.exists() else {}
-data["window_width"], data["window_height"] = 980, 760
+data["window_width"], data["window_height"] = 1280, 760
 cfg.parent.mkdir(parents=True, exist_ok=True)
 cfg.write_text(json.dumps(data))
 EOF

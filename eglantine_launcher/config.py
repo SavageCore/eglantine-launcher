@@ -630,8 +630,8 @@ def default_config():
         "minimize_on_launch": None,
         "close_behavior": None,
         # Main window size; updated whenever the window closes or hides.
-        # Wide default fits the side-by-side controls + build log layout.
-        "window_width": 980,
+        # Wide default fits the side-by-side controls + 100-column log.
+        "window_width": 1280,
         "window_height": 620,
         # The "Running in the background" notification only shows once.
         "tray_notice_shown": False,
