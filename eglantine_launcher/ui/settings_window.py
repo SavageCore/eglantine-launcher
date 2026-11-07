@@ -59,7 +59,7 @@ def _config_picker_label(key, names):
 class AddSourcePage(Gtk.Box):
     """Step 1: paste a GitHub / Forgejo repo link."""
 
-    def __init__(self, on_next, cfg=None):
+    def __init__(self, on_next, cfg=None, on_cancel=None):
         self.cfg = cfg or {}
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.set_margin_top(12)
@@ -67,6 +67,8 @@ class AddSourcePage(Gtk.Box):
         self.set_margin_start(12)
         self.set_margin_end(12)
         self.on_next = on_next
+        self.on_cancel = on_cancel
+        self._seq = 0
 
         group = Adw.PreferencesGroup(
             title="Add emulator source", description="Paste a GitHub or Forgejo repository link."
@@ -77,28 +79,55 @@ class AddSourcePage(Gtk.Box):
         self.append(group)
 
         self.error_label = Gtk.Label(label="")
-        self.error_label.add_css_class("error")
         self.error_label.set_wrap(True)
         self.append(self.error_label)
 
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         btn_box.set_halign(Gtk.Align.END)
+        self.back_btn = Gtk.Button(label="Back")
+        self.back_btn.connect("clicked", self._back)
+        btn_box.append(self.back_btn)
         self.next_btn = Gtk.Button(label="Next")
         self.next_btn.add_css_class("suggested-action")
         self.next_btn.connect("clicked", self._next)
         btn_box.append(self.next_btn)
         self.append(btn_box)
 
+    def set_status(self, msg, is_error=False):
+        self.error_label.set_label(msg)
+        if is_error:
+            self.error_label.add_css_class("error")
+            self.error_label.remove_css_class("dim-label")
+        else:
+            self.error_label.remove_css_class("error")
+            if msg:
+                self.error_label.add_css_class("dim-label")
+            else:
+                self.error_label.remove_css_class("dim-label")
+
+    def reset(self):
+        """Clear busy/error state so another URL can be tried."""
+        self._seq += 1
+        self.set_status("")
+        self.next_btn.set_sensitive(True)
+
+    def _back(self, *_args):
+        self.reset()
+        if self.on_cancel is not None:
+            self.on_cancel()
+
     def _next(self, *_args):
         url = self.url_entry.get_text().strip()
         if not url:
-            self.error_label.set_label("Enter a repository link.")
+            self.set_status("Enter a repository link.", is_error=True)
             return
+        self._seq += 1
+        seq = self._seq
         self.next_btn.set_sensitive(False)
-        self.error_label.set_label("Looking up repository...")
-        threading.Thread(target=self._lookup, args=(url,), daemon=True).start()
+        self.set_status("Looking up repository...", is_error=False)
+        threading.Thread(target=self._lookup, args=(url, seq), daemon=True).start()
 
-    def _lookup(self, url):
+    def _lookup(self, url, seq):
         try:
             name = fetch_repo_name(url, self.cfg) or ""
             branches = list_branches(url, cfg=self.cfg)
@@ -107,10 +136,24 @@ class AddSourcePage(Gtk.Box):
             except Exception:
                 default_branch = None
             releases_url = infer_releases_url(url)
-            GLib.idle_add(self.on_next, url, name, branches, releases_url, "", default_branch)
+            GLib.idle_add(self._lookup_succeeded, seq, url, name, branches, releases_url, default_branch)
         except Exception as e:
-            GLib.idle_add(self.error_label.set_label, f"Could not read repository: {e}")
-            GLib.idle_add(self.next_btn.set_sensitive, True)
+            GLib.idle_add(self._lookup_failed, seq, str(e))
+
+    def _lookup_succeeded(self, seq, url, name, branches, releases_url, default_branch):
+        if seq != self._seq:
+            return False
+        self.set_status("")
+        self.next_btn.set_sensitive(True)
+        self.on_next(url, name, branches, releases_url, "", default_branch)
+        return False
+
+    def _lookup_failed(self, seq, err):
+        if seq != self._seq:
+            return False
+        self.set_status(f"Could not read repository: {err}", is_error=True)
+        self.next_btn.set_sensitive(True)
+        return False
 
 
 class ProjectEditDialog(Adw.Window):
@@ -821,7 +864,7 @@ class SettingsWindow(Adw.Window):
 
         self.stack = Gtk.Stack()
         self.stack.add_named(list_page, "list")
-        self.add_page = AddSourcePage(self._on_repo_next, cfg=self.cfg)
+        self.add_page = AddSourcePage(self._on_repo_next, cfg=self.cfg, on_cancel=self._on_add_back)
         self.stack.add_named(self.add_page, "add")
 
         if self.cfg.get("github_token_rejected"):
@@ -1336,7 +1379,11 @@ class SettingsWindow(Adw.Window):
             Gtk.show_uri(self, url, 0)
 
     def _add(self, *_args):
+        self.add_page.reset()
         self.stack.set_visible_child_name("add")
+
+    def _on_add_back(self):
+        self.stack.set_visible_child_name("list")
 
     def _on_repo_next(self, url, name, branches, releases_url, _err, default_branch=None):
         prefill = {
@@ -1351,6 +1398,8 @@ class SettingsWindow(Adw.Window):
         def save(project, old_id):
             self.cfg.setdefault("projects", []).append(project)
             save_config(self.cfg)
+            self.add_page.url_entry.set_text("")
+            self.add_page.reset()
             self.stack.set_visible_child_name("list")
             self._refresh()
             if self.on_changed:
