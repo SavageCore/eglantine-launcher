@@ -4,6 +4,8 @@
 |---|---|---|
 | Main | ![Main light](light/main.png) | ![Main dark](dark/main.png) |
 | Settings | ![Settings light](light/settings.png) | ![Settings dark](dark/settings.png) |
+| Settings GitHub | ![Settings GitHub light](light/settings_github.png) | ![Settings GitHub dark](dark/settings_github.png) |
+| Settings backups | ![Settings backups light](light/settings_backups.png) | ![Settings backups dark](dark/settings_backups.png) |
 | Settings sources | ![Settings sources light](light/settings_sources.png) | ![Settings sources dark](dark/settings_sources.png) |
 | Settings games | ![Settings games light](light/settings_games.png) | ![Settings games dark](dark/settings_games.png) |
 | Settings PR builds | ![Settings PR builds light](light/settings_pr_builds.png) | ![Settings PR builds dark](dark/settings_pr_builds.png) |
