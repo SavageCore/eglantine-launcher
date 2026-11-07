@@ -82,6 +82,11 @@ def main() -> int:
     )
     parser.add_argument("--about", action="store_true", help="Open the About dialog on launch")
     parser.add_argument("--pr-builds", action="store_true", help="Open the PR Builds dialog on launch")
+    parser.add_argument(
+        "--demo-build-log",
+        action="store_true",
+        help="Fill the build log with representative output (screenshots)",
+    )
     args = parser.parse_args()
 
     auto = args.auto or args.launch
@@ -155,7 +160,7 @@ def main() -> int:
 
         def _on_activate(self, app):
             if self._window is None:
-                self._window = LauncherWindow(app, auto=self._auto)
+                self._window = LauncherWindow(app, auto=self._auto, demo_build_log=args.demo_build_log)
             self._window.restore_from_tray()
             if args.settings or args.edit_source:
                 settings = self._window.on_settings()

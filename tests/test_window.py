@@ -54,6 +54,21 @@ def test_main_window_has_content(needs_display, fake_home):
         window.close()
 
 
+def test_demo_build_log_fills_log(needs_display, fake_home):
+    window = LauncherWindow(_make_app(), demo_build_log=True)
+    try:
+        buf = window.log_view.get_buffer()
+        text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+        assert "[1153/1270]" in text
+        assert window.copy_btn.get_visible() is True
+        assert window.status_label.get_visible() is True
+        assert "Building" in window.status_label.get_label()
+        assert window.progress.get_visible() is True
+        assert window.stop_btn.get_visible() is True
+    finally:
+        window.close()
+
+
 def _pill_labels(window):
     labels = []
     child = window.tag_flow.get_first_child()

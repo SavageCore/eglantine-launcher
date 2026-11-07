@@ -130,7 +130,7 @@ def format_build_duration(seconds):
 
 
 class LauncherWindow(Adw.ApplicationWindow):
-    def __init__(self, app, auto=False):
+    def __init__(self, app, auto=False, demo_build_log=False):
         super().__init__(application=app, title="Eglantine Launcher")
         self.cfg = load_config()
         # One-time cutover (then a no-op): legacy/fork emulator dir names
@@ -299,14 +299,18 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.shortcut_btn = Gtk.Button(label="Shortcuts...")
         self.shortcut_btn.connect("clicked", self.on_shortcuts_clicked)
 
-        self.action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.action_row.set_valign(Gtk.Align.CENTER)
-        self.action_row.append(self.shortcut_btn)
+        self.action_row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        btn_row.set_valign(Gtk.Align.CENTER)
+        btn_row.append(self.shortcut_btn)
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        btn_row.append(spacer)
+        # Stop then Launch keeps Launch rightmost as the primary action.
+        btn_row.append(self.stop_btn)
+        btn_row.append(self.launch_btn)
+        self.action_row.append(btn_row)
         self.action_row.append(self.progress)
-        # End group reads left-to-right: Stop then Launch keeps
-        # Launch rightmost as the primary action.
-        self.action_row.append(self.stop_btn)
-        self.action_row.append(self.launch_btn)
         left.append(self.action_row)
 
         # Right column: always-visible build log with a single status line.
@@ -398,8 +402,42 @@ class LauncherWindow(Adw.ApplicationWindow):
         toolbar_view.set_content(content_wrap)
         self.set_content(toolbar_view)
 
+        if demo_build_log:
+            self._show_demo_build_log()
+
         if auto:
             GLib.idle_add(self._auto_start)
+
+    def _show_demo_build_log(self):
+        """Fill the log with representative build output (screenshots only)."""
+        lines = [
+            "1 warning generated.",
+            "[1153/1270] Building CXX object "
+            "src/yuzu_cmd/CMakeFiles/yuzu-cmd.dir/emu_window/emu_window.cpp.o",
+            "warning: unknown -Werror warning specifier: '-Wno-error-all' [-Wunknown-warning-option]",
+            "1 warning generated.",
+            "[1154/1270] Linking CXX static library src/audio_core/libaudio_core.a",
+            "[1155/1270] Linking CXX static library src/core/libcore.a",
+            "[1156/1270] Automatic RCC for ../dist/qt_themes/controller/controller.qrc",
+            "[1157/1270] Automatic RCC for ../dist/qt_themes/default_dark/style.qrc",
+            "[1158/1270] Automatic RCC for ../dist/icons/overlay/overlay.qrc",
+            "[1159/1270] Automatic RCC for ../dist/qt_themes/colorful/style.qrc",
+            "[1160/1270] Automatic RCC for ../dist/qt_themes/default/default.qrc",
+            "[1161/1270] Automatic RCC for ../dist/qt_themes/colorful_dark/style.qrc",
+            "[1162/1270] Automatic RCC for ../dist/qt_themes/colorful_midnight_blue/style.qrc",
+            "[1163/1270] Automatic RCC for ../dist/qt_themes/qdarkstyle_midnight_blue/style.qrc",
+            "[1164/1270] Automatic RCC for yuzu.qrc",
+        ]
+        self.log_view.get_buffer().set_text("\n".join(lines) + "\n")
+        self._log_has_content = True
+        self.copy_btn.set_visible(True)
+        status = "Building (this may take a while)..."
+        self.status_label.set_text(status)
+        self.status_label.set_tooltip_text(status)
+        self.status_label.set_visible(True)
+        self.progress.set_fraction(0.9)
+        self.progress.set_visible(True)
+        self.stop_btn.set_visible(True)
 
     def _initial_update_check(self):
         threading.Thread(target=self._hourly_check, daemon=True).start()

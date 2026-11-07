@@ -27,7 +27,7 @@ if [ $# -gt 0 ]; then
     pages+=("$p")
   done
 fi
-flags_main=""
+flags_main="--demo-build-log"
 flags_settings="--settings"
 flags_settings_github="--settings --settings-page github"
 flags_settings_backups="--settings --settings-page backups"
