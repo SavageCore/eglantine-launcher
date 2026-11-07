@@ -357,6 +357,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.log_view.set_monospace(True)
         self.log_view.get_buffer().set_text("Build output appears here.")
         self._log_has_content = False
+        self._log_follow = True
         self.log_scrolled = Gtk.ScrolledWindow()
         self.log_scrolled.set_child(self.log_view)
         self.log_scrolled.set_vexpand(True)
@@ -374,7 +375,28 @@ class LauncherWindow(Adw.ApplicationWindow):
         except Exception:
             self.log_scrolled.set_min_content_width(760)
 
-        right.append(self.log_scrolled)
+        # FAB that jumps back to the live tail. Shown only while the
+        # user has scrolled up; hidden when following or at the bottom.
+        self.log_bottom_btn = Gtk.Button(icon_name="go-down-symbolic")
+        self.log_bottom_btn.set_tooltip_text("Scroll to bottom")
+        self.log_bottom_btn.add_css_class("circular")
+        self.log_bottom_btn.add_css_class("suggested-action")
+        self.log_bottom_btn.set_halign(Gtk.Align.END)
+        self.log_bottom_btn.set_valign(Gtk.Align.END)
+        self.log_bottom_btn.set_margin_end(12)
+        self.log_bottom_btn.set_margin_bottom(12)
+        self.log_bottom_btn.set_visible(False)
+        self.log_bottom_btn.connect("clicked", self._on_log_bottom_clicked)
+        self.log_overlay = Gtk.Overlay()
+        self.log_overlay.set_child(self.log_scrolled)
+        self.log_overlay.add_overlay(self.log_bottom_btn)
+        self.log_overlay.set_vexpand(True)
+        self.log_overlay.set_hexpand(True)
+        vadj = self.log_scrolled.get_vadjustment()
+        vadj.connect("value-changed", self._on_log_scroll)
+        vadj.connect("changed", self._on_log_scroll)
+
+        right.append(self.log_overlay)
         # Progress lives with the build output, full panel width, instead
         # of crowding the settings side.
         right.append(self.progress)
@@ -438,6 +460,11 @@ class LauncherWindow(Adw.ApplicationWindow):
         ]
         self.log_view.get_buffer().set_text("\n".join(lines) + "\n")
         self._log_has_content = True
+        self._log_follow = True
+        try:
+            self.log_bottom_btn.set_visible(False)
+        except Exception:
+            pass
         self.log_panel.set_visible(True)
         self.set_default_size(1280, 620)
         self.copy_btn.set_visible(True)
@@ -591,12 +618,54 @@ class LauncherWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
 
+    def _is_log_at_bottom(self):
+        try:
+            vadj = self.log_scrolled.get_vadjustment()
+            value = vadj.get_value()
+            page = vadj.get_page_size()
+            upper = vadj.get_upper()
+        except Exception:
+            return True
+        if upper <= page:
+            return True
+        return value + page >= upper - 30
+
+    def _on_log_scroll(self, *_args):
+        at_bottom = self._is_log_at_bottom()
+        self._log_follow = at_bottom
+        try:
+            show = bool(getattr(self, "_log_has_content", False)) and not at_bottom
+            self.log_bottom_btn.set_visible(show)
+        except Exception:
+            pass
+
+    def _scroll_log_to_bottom(self):
+        try:
+            buf = self.log_view.get_buffer()
+            mark = buf.get_insert()
+            self.log_view.scroll_to_mark(mark, 0.0, True, 0.0, 1.0)
+        except Exception:
+            pass
+
+    def _on_log_bottom_clicked(self, *_args):
+        self._log_follow = True
+        try:
+            self.log_bottom_btn.set_visible(False)
+        except Exception:
+            pass
+        self._scroll_log_to_bottom()
+
     def _append_log(self, line):
         def _do():
             buf = self.log_view.get_buffer()
             if not getattr(self, "_log_has_content", False):
                 buf.set_text("")
                 self._log_has_content = True
+                self._log_follow = True
+                try:
+                    self.log_bottom_btn.set_visible(False)
+                except Exception:
+                    pass
                 self.copy_btn.set_visible(True)
                 # First build output: reveal the side panel and widen
                 # the window to fit it. Download runs never get here.
@@ -607,9 +676,11 @@ class LauncherWindow(Adw.ApplicationWindow):
                     height = 0
                 self.set_default_size(1280, height if height > 0 else 620)
             buf.insert(buf.get_end_iter(), line + "\n")
-            # scroll to end
-            mark = buf.get_insert()
-            self.log_view.scroll_to_mark(mark, 0.0, True, 0.0, 1.0)
+            # scroll to end only while following; a user who scrolled
+            # up stays put until they return to the bottom (or tap
+            # the FAB), per _on_log_scroll.
+            if getattr(self, "_log_follow", True):
+                self._scroll_log_to_bottom()
 
         GLib.idle_add(_do)
 
@@ -1316,6 +1387,11 @@ class LauncherWindow(Adw.ApplicationWindow):
         # source builds reveal it again on the first log line
         self.log_view.get_buffer().set_text("")
         self._log_has_content = False
+        self._log_follow = True
+        try:
+            self.log_bottom_btn.set_visible(False)
+        except Exception:
+            pass
         self.log_panel.set_visible(False)
         try:
             height = self.get_height()
