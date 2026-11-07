@@ -50,6 +50,7 @@ def no_api_throttle(monkeypatch):
         from eglantine_launcher import tasks
 
         tasks._reset_api_throttle()
+        tasks.clear_lookup_caches()
     except Exception:
         pass
 

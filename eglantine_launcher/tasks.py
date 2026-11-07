@@ -420,6 +420,10 @@ def fetch_pr_info(pr_url, cfg=None, timeout=20):
     parsed = parse_pr_url(pr_url)
     if parsed is None:
         raise RuntimeError("That does not look like a PR link (expected .../pull/NNN).")
+    cache_key = parsed.get("canonical") or (pr_url or "").strip()
+    hit = _lookup_cache_get(_pr_info_cache, cache_key)
+    if hit is not None:
+        return dict(hit)
     url = pr_api_url(parsed)
     data = api_get_json(url, cfg, timeout=timeout)
     if not isinstance(data, dict):
@@ -445,7 +449,7 @@ def fetch_pr_info(pr_url, cfg=None, timeout=20):
         or f"{parsed['scheme']}://{parsed['web_host']}/{parsed['owner']}/{parsed['repo']}.git"
     )
     base_branch = base.get("ref") or base.get("label") or ""
-    return {
+    result = {
         "title": title if isinstance(title, str) else "",
         "state": state,
         "merged": merged,
@@ -462,6 +466,8 @@ def fetch_pr_info(pr_url, cfg=None, timeout=20):
         "pr_url": parsed["canonical"],
         "api_url": url,
     }
+    _lookup_cache_set(_pr_info_cache, cache_key, dict(result), _PR_INFO_TTL)
+    return result
 
 
 def make_pr_project(name, pr_url, details=None, existing=None):
@@ -591,11 +597,86 @@ def infer_releases_url(source_url):
     return f"{base}/repos/{owner}/{repo}/releases"
 
 
+# Short-lived in-memory caches for repo lookups. The add-source flow,
+# the source editor, and background refreshes all ask for the same
+# repo info / branches / PR data in bursts; without caching one dialog
+# costs several identical API calls and a retry costs them again.
+# Failures are never cached so the next attempt still tries the network.
+_lookup_lock = threading.Lock()
+_repo_info_cache: dict = {}
+_branches_cache: dict = {}
+_branch_dates_cache: dict = {}
+_pr_info_cache: dict = {}
+_remote_registry_cache: dict = {}
+_REPO_INFO_TTL = 300.0
+_BRANCHES_TTL = 300.0
+_BRANCH_DATES_TTL = 600.0
+_PR_INFO_TTL = 120.0
+_REMOTE_REGISTRY_TTL = 3600.0
+_ADD_LOOKUP_TTL = 300.0
+_add_lookup_cache: dict = {}
+
+
+def _lookup_cache_get(cache, key):
+    try:
+        with _lookup_lock:
+            entry = cache.get(key)
+        if entry is None:
+            return None
+        expires, value = entry
+        if time.monotonic() >= expires:
+            with _lookup_lock:
+                cache.pop(key, None)
+            return None
+        return value
+    except Exception:
+        return None
+
+
+def _lookup_cache_set(cache, key, value, ttl):
+    try:
+        with _lookup_lock:
+            cache[key] = (time.monotonic() + max(0.0, float(ttl)), value)
+    except Exception:
+        pass
+
+
+def clear_lookup_caches():
+    """Drop all in-memory API caches (tests)."""
+    with _lookup_lock:
+        for cache in (
+            _repo_info_cache,
+            _branches_cache,
+            _branch_dates_cache,
+            _pr_info_cache,
+            _remote_registry_cache,
+            _add_lookup_cache,
+        ):
+            cache.clear()
+
+
+def _repo_cache_key(source_url):
+    """Normalized cache key for a repo URL, or None when unparseable."""
+    host, owner, repo = parse_repo(source_url)
+    if not owner or not repo:
+        return None
+    host_norm = (host or "").lower()
+    if host_norm == "github":
+        return ("github", owner.lower(), repo.lower())
+    base = _forgejo_api_base(source_url)
+    return (host_norm, owner.lower(), repo.lower(), base or "")
+
+
 def fetch_repo_info(source_url, cfg=None):
     """Return raw repo dict for a github or forgejo URL, or {} on failure."""
     host, owner, repo = parse_repo(source_url)
     if not repo:
         return {}
+    key = _repo_cache_key(source_url)
+    if key is not None:
+        hit = _lookup_cache_get(_repo_info_cache, key)
+        if hit is not None:
+            return dict(hit)
     if host == "github":
         url = f"https://api.github.com/repos/{owner}/{repo}"
     else:
@@ -605,9 +686,14 @@ def fetch_repo_info(source_url, cfg=None):
         url = f"{base}/repos/{owner}/{repo}"
     try:
         data = api_get_json(url, cfg, timeout=20)
-        return data if isinstance(data, dict) else {}
+        result = data if isinstance(data, dict) else {}
     except Exception:
         return {}
+    if not result:
+        return {}
+    if key is not None:
+        _lookup_cache_set(_repo_info_cache, key, dict(result), _REPO_INFO_TTL)
+    return result
 
 
 def get_default_branch(source_url, cfg=None):
@@ -668,6 +754,7 @@ def fetch_github_branch_dates(source_url, branches, cfg=None, max_workers=4, lim
     One small commit lookup per branch, all via the central throttled
     api_get_json() so the burst is spaced per host. Failures are
     skipped so callers always get a partial dict, never an exception.
+    Results are cached per repo+branch set; failures are not cached.
     """
     host, owner, repo = parse_repo(source_url)
     if host != "github" or not owner or not repo:
@@ -675,6 +762,12 @@ def fetch_github_branch_dates(source_url, branches, cfg=None, max_workers=4, lim
     names = [b for b in (branches or []) if b][: max(int(limit or 500), 1)]
     if not names:
         return {}
+    key = _repo_cache_key(source_url)
+    cache_key = (key, tuple(sorted(names))) if key is not None else None
+    if cache_key is not None:
+        hit = _lookup_cache_get(_branch_dates_cache, cache_key)
+        if hit is not None:
+            return dict(hit)
 
     def _one(branch):
         try:
@@ -700,6 +793,8 @@ def fetch_github_branch_dates(source_url, branches, cfg=None, max_workers=4, lim
                     dates[branch] = dt
     except Exception:
         pass
+    if dates and cache_key is not None:
+        _lookup_cache_set(_branch_dates_cache, cache_key, dict(dates), _BRANCH_DATES_TTL)
     return dates
 
 
@@ -741,11 +836,18 @@ def list_branches(source_url, limit=100, cfg=None):
     free. GitHub branch entries carry no date, so the initial return is
     default-first in API order; call fetch_github_branch_dates() in the
     background and re-sort with sort_branch_names() to match the web UI.
+    Successful results are cached briefly; failures are not.
     """
     host, owner, repo = parse_repo(source_url)
     if not owner or not repo:
         return []
     page_size = min(max(int(limit or 100), 1), 100)
+    key = _repo_cache_key(source_url)
+    cache_key = (key, page_size) if key is not None else None
+    if cache_key is not None:
+        hit = _lookup_cache_get(_branches_cache, cache_key)
+        if hit is not None:
+            return list(hit)
     if host == "github":
         url = f"https://api.github.com/repos/{owner}/{repo}/branches?per_page={page_size}"
     else:
@@ -770,7 +872,10 @@ def list_branches(source_url, limit=100, cfg=None):
         default = get_default_branch(source_url, cfg)
     except Exception:
         default = None
-    return sort_branch_names(names, dates, default)
+    ordered = sort_branch_names(names, dates, default)
+    if ordered and cache_key is not None:
+        _lookup_cache_set(_branches_cache, cache_key, list(ordered), _BRANCHES_TTL)
+    return ordered
 
 
 def fetch_repo_name(source_url, cfg=None):
@@ -786,6 +891,48 @@ def fetch_repo_name(source_url, cfg=None):
     if name.strip().lower() == "eglantine" and (owner or "").strip():
         return owner.strip()
     return name
+
+
+def lookup_repo_for_add(source_url, cfg=None):
+    """Combined add-source lookup with a short cache.
+
+    Returns (name, branches, default_branch, releases_url). One dialog
+    previously cost three separate repo-info calls plus a branch list;
+    the shared fetch_repo_info/list_branches caches already collapse
+    those, and this wrapper caches the combined tuple so an immediate
+    retry (cancel then Next again) costs no network at all.
+    Failures propagate and are never cached.
+    """
+    key = _repo_cache_key(source_url)
+    if key is not None:
+        hit = _lookup_cache_get(_add_lookup_cache, key)
+        if hit is not None:
+            name, branches, releases_url, default_branch = hit
+            return name, list(branches), releases_url, default_branch
+    name = fetch_repo_name(source_url, cfg) or ""
+    branches = list_branches(source_url, cfg=cfg)
+    try:
+        default_branch = get_default_branch(source_url, cfg)
+    except Exception:
+        default_branch = None
+    releases_url = infer_releases_url(source_url)
+    if key is not None and branches:
+        _lookup_cache_set(
+            _add_lookup_cache, key, (name, list(branches), releases_url, default_branch), _ADD_LOOKUP_TTL
+        )
+    return name, branches, releases_url, default_branch
+
+
+def get_cached_repo_lookup(source_url):
+    """Return the cached lookup_repo_for_add tuple, or None."""
+    key = _repo_cache_key(source_url)
+    if key is None:
+        return None
+    hit = _lookup_cache_get(_add_lookup_cache, key)
+    if hit is None:
+        return None
+    name, branches, releases_url, default_branch = hit
+    return name, list(branches), releases_url, default_branch
 
 
 def release_platforms(cfg_or_project):
@@ -2173,22 +2320,34 @@ GAMES_URL = "https://raw.githubusercontent.com/SavageCore/eglantine-launcher/mai
 
 def fetch_remote_sources(cfg=None, timeout=20):
     """Source registry from the repo. Returns [] offline (callers keep shipped defaults)."""
+    hit = _lookup_cache_get(_remote_registry_cache, "sources")
+    if hit is not None:
+        return [dict(s) for s in hit]
     try:
         data = api_get_json(SOURCES_URL, cfg, timeout=timeout)
         sources = data.get("sources", []) if isinstance(data, dict) else []
-        return [s for s in sources if isinstance(s, dict) and s.get("id") and s.get("source_url")]
+        result = [s for s in sources if isinstance(s, dict) and s.get("id") and s.get("source_url")]
     except Exception:
         return []
+    if result:
+        _lookup_cache_set(_remote_registry_cache, "sources", [dict(s) for s in result], _REMOTE_REGISTRY_TTL)
+    return result
 
 
 def fetch_remote_games(cfg=None, timeout=20):
     """Game registry from the repo. Returns [] offline (callers keep shipped games)."""
+    hit = _lookup_cache_get(_remote_registry_cache, "games")
+    if hit is not None:
+        return [dict(g) for g in hit]
     try:
         data = api_get_json(GAMES_URL, cfg, timeout=timeout)
         games = data.get("games", []) if isinstance(data, dict) else []
-        return [g for g in games if isinstance(g, dict) and g.get("title_id") and g.get("name")]
+        result = [g for g in games if isinstance(g, dict) and g.get("title_id") and g.get("name")]
     except Exception:
         return []
+    if result:
+        _lookup_cache_set(_remote_registry_cache, "games", [dict(g) for g in result], _REMOTE_REGISTRY_TTL)
+    return result
 
 
 def _find_pgo_clang():

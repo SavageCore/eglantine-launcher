@@ -16,14 +16,14 @@ from ..tasks import (
     delete_save_backup,
     delete_storage_row,
     fetch_github_branch_dates,
-    fetch_repo_name,
     format_backup_name,
     format_size,
+    get_cached_repo_lookup,
     get_default_branch,
-    infer_releases_url,
     known_config_keys,
     list_branches,
     list_save_backups,
+    lookup_repo_for_add,
     move_source_config,
     parse_repo,
     project_storage,
@@ -121,6 +121,13 @@ class AddSourcePage(Gtk.Box):
         if not url:
             self.set_status("Enter a repository link.", is_error=True)
             return
+        cached = get_cached_repo_lookup(url)
+        if cached is not None:
+            name, branches, releases_url, default_branch = cached
+            self.set_status("")
+            self.next_btn.set_sensitive(True)
+            self.on_next(url, name, branches, releases_url, "", default_branch)
+            return
         self._seq += 1
         seq = self._seq
         self.next_btn.set_sensitive(False)
@@ -129,13 +136,7 @@ class AddSourcePage(Gtk.Box):
 
     def _lookup(self, url, seq):
         try:
-            name = fetch_repo_name(url, self.cfg) or ""
-            branches = list_branches(url, cfg=self.cfg)
-            try:
-                default_branch = get_default_branch(url, self.cfg)
-            except Exception:
-                default_branch = None
-            releases_url = infer_releases_url(url)
+            name, branches, releases_url, default_branch = lookup_repo_for_add(url, self.cfg)
             GLib.idle_add(self._lookup_succeeded, seq, url, name, branches, releases_url, default_branch)
         except Exception as e:
             GLib.idle_add(self._lookup_failed, seq, str(e))
