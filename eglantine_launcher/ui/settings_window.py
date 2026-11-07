@@ -21,6 +21,7 @@ from ..tasks import (
     format_size,
     get_default_branch,
     infer_releases_url,
+    known_config_keys,
     list_branches,
     list_save_backups,
     move_source_config,
@@ -40,6 +41,19 @@ from .taglist import TagListEditor
 
 def _slug(name):
     return "".join(c.lower() if c.isalnum() else "-" for c in name).strip("-") or uuid.uuid4().hex[:8]
+
+
+def _config_picker_label(key, names):
+    """Picker line for one folder: slug plus the sources sharing it.
+
+    The source names ride along in the label so the picker's substring
+    search matches them too - no need to remember the raw slug.
+    """
+    shown = [n for n in names if n][:3]
+    suffix = f" - {', '.join(shown)}" if shown else ""
+    if len(names) > len(shown):
+        suffix += f" +{len(names) - len(shown)} more"
+    return f"{key}{suffix}"
 
 
 class AddSourcePage(Gtk.Box):
@@ -194,6 +208,18 @@ class ProjectEditDialog(Adw.Window):
         self.config_key_entry.set_tooltip_text(
             "Folder under ~/.config/eglantine-launcher/sources holding this source's emulator settings."
         )
+        self.config_picker_row = Adw.ComboRow(title="Use existing folder")
+        if hasattr(self.config_picker_row, "set_enable_search"):
+            self.config_picker_row.set_enable_search(True)
+        # Same as the branch picker: without an expression the search
+        # entry shows but never filters.
+        self.config_picker_row.set_expression(Gtk.PropertyExpression.new(Gtk.StringObject, None, "string"))
+        if hasattr(self.config_picker_row, "set_search_match_mode"):
+            self.config_picker_row.set_search_match_mode(Gtk.StringFilterMatchMode.SUBSTRING)
+        self.config_picker_keys = []
+        self._refresh_config_picker()
+        self.config_picker_row.connect("notify::selected", self._on_config_picker_changed)
+        settings_group.add(self.config_picker_row)
         settings_group.add(self.config_key_entry)
         settings_page.append(settings_group)
 
@@ -561,6 +587,27 @@ class ProjectEditDialog(Adw.Window):
                 "source_url": self.source_entry.get_text().strip(),
             }
         )
+
+    def _refresh_config_picker(self):
+        """Fill the existing-folder picker; hide it when there is nothing to pick."""
+        current = self.config_key_entry.get_text().strip()
+        entries = [(k, list(n)) for k, n in known_config_keys(self._cfg, exclude_id=self._pid)]
+        if current and all(k != current for k, _names in entries):
+            entries.insert(0, (current, []))
+        self.config_picker_keys = [k for k, _names in entries]
+        self.config_picker_row.set_model(
+            Gtk.StringList.new([_config_picker_label(k, names) for k, names in entries])
+        )
+        if current in self.config_picker_keys:
+            self.config_picker_row.set_selected(self.config_picker_keys.index(current))
+        self.config_picker_row.set_visible(len(self.config_picker_keys) > 1)
+
+    def _on_config_picker_changed(self, row, _pspec):
+        idx = row.get_selected()
+        if 0 <= idx < len(self.config_picker_keys):
+            key = self.config_picker_keys[idx]
+            if key != self.config_key_entry.get_text().strip():
+                self.config_key_entry.set_text(key)
 
     def _save(self, *_args):
         name = self.name_entry.get_text().strip()

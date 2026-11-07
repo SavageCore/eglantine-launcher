@@ -34,6 +34,33 @@ def test_source_key_falls_back_to_project_id():
     assert tasks.source_key({"id": "local-build"}) == "project-local-build"
 
 
+def test_known_config_keys_merges_projects_and_disk(fake_home):
+    (fake_home / ".config" / "eglantine-launcher" / "sources" / "on-disk-only").mkdir(parents=True)
+    cfg = {
+        "projects": [
+            {"id": "a", "name": "Alpha", "source_url": "https://github.com/o/r.git"},
+            {"id": "b", "name": "Beta", "source_url": "https://github.com/o/r.git"},
+            {
+                "id": "c",
+                "name": "Gamma",
+                "source_url": "https://github.com/o/other.git",
+                "config_key": "shared",
+            },
+        ]
+    }
+    assert dict(tasks.known_config_keys(cfg)) == {
+        "github-o-r": ["Alpha", "Beta"],
+        "on-disk-only": [],
+        "shared": ["Gamma"],
+    }
+
+
+def test_known_config_keys_excludes_edited_source_name(fake_home):
+    cfg = {"projects": [{"id": "a", "name": "Alpha", "source_url": "https://github.com/o/r.git"}]}
+    assert tasks.known_config_keys(cfg, exclude_id="a") == [("github-o-r", [])]
+    assert tasks.known_config_keys(cfg) == [("github-o-r", ["Alpha"])]
+
+
 def test_source_config_home_is_under_launcher_config(fake_home):
     home = tasks.source_config_home({"source_url": "https://github.com/o/r.git"})
     assert home == fake_home / ".config" / "eglantine-launcher" / "sources" / "github-o-r"
@@ -782,6 +809,74 @@ def test_pr_add_saves_offline_stub(needs_display, fake_home, monkeypatch):
         assert saved["project"]["pr_owner"] == "o"
         assert saved["project"]["pr_head_sha"] == ""
         assert saved["project"]["tags"] == [{"id": "fix", "label": "fix", "tooltip": "Fixes mods on NUP"}]
+    finally:
+        try:
+            dialog.close()
+        except Exception:
+            pass
+
+
+def test_edit_dialog_config_picker_lists_and_applies(needs_display, fake_home):
+    from eglantine_launcher.ui.settings_window import ProjectEditDialog
+
+    cfg = {
+        "projects": [
+            {"id": "a", "name": "Alpha", "source_url": "https://github.com/o/r.git"},
+            {"id": "b", "name": "Beta", "source_url": "https://github.com/o/other.git"},
+        ]
+    }
+    proj = {"id": "b", "name": "Beta", "source_url": "https://github.com/o/other.git"}
+    dialog = ProjectEditDialog(None, proj, lambda *a: None, cfg=cfg)
+    try:
+        # The edited source's own name is left out; other sources show up.
+        assert "github-o-r" in dialog.config_picker_keys
+        assert "github-o-other" in dialog.config_picker_keys
+        assert dialog.config_picker_row.get_visible()
+        dialog.config_picker_row.set_selected(dialog.config_picker_keys.index("github-o-r"))
+        assert dialog.config_key_entry.get_text() == "github-o-r"
+    finally:
+        try:
+            dialog.close()
+        except Exception:
+            pass
+
+
+def test_edit_dialog_config_picker_hidden_without_choice(needs_display, fake_home):
+    from eglantine_launcher.ui.settings_window import ProjectEditDialog
+
+    cfg = {"projects": []}
+    proj = {"id": "p", "name": "Solo", "source_url": "https://github.com/o/r.git"}
+    dialog = ProjectEditDialog(None, proj, lambda *a: None, cfg=cfg)
+    try:
+        assert dialog.config_picker_keys == ["github-o-r"]
+        assert not dialog.config_picker_row.get_visible()
+        # Free-typed names still save, slug-normalized.
+        dialog.config_key_entry.set_text("My Settings")
+        saved = {}
+        dialog.on_save = lambda project, _old: saved.update(project=project)
+        dialog._save()
+        assert saved["project"]["config_key"] == "my-settings"
+    finally:
+        try:
+            dialog.close()
+        except Exception:
+            pass
+
+
+def test_pr_dialog_config_picker_marks_touched(needs_display, fake_home):
+    from eglantine_launcher.ui.pr_dialog import PREditDialog
+
+    cfg = {"projects": [{"id": "a", "name": "Alpha", "source_url": "https://github.com/o/r.git"}]}
+    dialog = PREditDialog(None, None, lambda *a: None, cfg=cfg)
+    try:
+        dialog.url_entry.set_text("https://github.com/o/other/pull/7")
+        assert dialog.config_key_entry.get_text() == "github-o-other"
+        assert dialog.config_picker_row.get_visible()
+        dialog.config_picker_row.set_selected(dialog.config_picker_keys.index("github-o-r"))
+        assert dialog.config_key_entry.get_text() == "github-o-r"
+        # A picked folder sticks: later URL edits no longer overwrite it.
+        dialog.url_entry.set_text("https://github.com/o/third/pull/9")
+        assert dialog.config_key_entry.get_text() == "github-o-r"
     finally:
         try:
             dialog.close()

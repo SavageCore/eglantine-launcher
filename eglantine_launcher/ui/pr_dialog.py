@@ -13,6 +13,7 @@ from ..config import save as save_config
 from ..tasks import (
     fetch_pr_info,
     is_pr_project,
+    known_config_keys,
     make_pr_project,
     parse_pr_url,
     pr_default_name,
@@ -22,6 +23,19 @@ from ..tasks import (
 )
 from .sidebar import SidebarLayout
 from .taglist import TagListEditor
+
+
+def _config_picker_label(key, names):
+    """Picker line for one folder: slug plus the sources sharing it.
+
+    The source names ride along in the label so the picker's substring
+    search matches them too - no need to remember the raw slug.
+    """
+    shown = [n for n in names if n][:3]
+    suffix = f" - {', '.join(shown)}" if shown else ""
+    if len(names) > len(shown):
+        suffix += f" +{len(names) - len(shown)} more"
+    return f"{key}{suffix}"
 
 
 class PREditDialog(Adw.Window):
@@ -69,6 +83,18 @@ class PREditDialog(Adw.Window):
         self.config_key_entry = Adw.EntryRow(title="Settings folder")
         self.config_key_entry.set_text(self._current_config_key())
         self.config_key_entry.connect("changed", self._on_config_key_changed)
+        self.config_picker_row = Adw.ComboRow(title="Use existing folder")
+        if hasattr(self.config_picker_row, "set_enable_search"):
+            self.config_picker_row.set_enable_search(True)
+        # The search entry needs an expression to obtain strings from items;
+        # without it the entry shows but never filters.
+        self.config_picker_row.set_expression(Gtk.PropertyExpression.new(Gtk.StringObject, None, "string"))
+        if hasattr(self.config_picker_row, "set_search_match_mode"):
+            self.config_picker_row.set_search_match_mode(Gtk.StringFilterMatchMode.SUBSTRING)
+        self.config_picker_keys = []
+        self._refresh_config_picker()
+        self.config_picker_row.connect("notify::selected", self._on_config_picker_changed)
+        settings_group.add(self.config_picker_row)
         settings_group.add(self.config_key_entry)
         general_page.append(settings_group)
 
@@ -179,6 +205,29 @@ class PREditDialog(Adw.Window):
         if not self._updating_config:
             self._config_key_touched = True
 
+    def _refresh_config_picker(self):
+        """Fill the existing-folder picker; hide it when there is nothing to pick."""
+        current = self.config_key_entry.get_text().strip()
+        entries = [(k, list(n)) for k, n in known_config_keys(self._cfg, exclude_id=self.project.get("id"))]
+        if current and all(k != current for k, _names in entries):
+            entries.insert(0, (current, []))
+        self.config_picker_keys = [k for k, _names in entries]
+        self.config_picker_row.set_model(
+            Gtk.StringList.new([_config_picker_label(k, names) for k, names in entries])
+        )
+        if current in self.config_picker_keys:
+            self.config_picker_row.set_selected(self.config_picker_keys.index(current))
+        self.config_picker_row.set_visible(len(self.config_picker_keys) > 1)
+
+    def _on_config_picker_changed(self, row, _pspec):
+        # A picked folder is a user choice: the entry's changed handler
+        # marks the field touched so the PR link stops overwriting it.
+        idx = row.get_selected()
+        if 0 <= idx < len(self.config_picker_keys):
+            key = self.config_picker_keys[idx]
+            if key != self.config_key_entry.get_text().strip():
+                self.config_key_entry.set_text(key)
+
     def _collect_tag_state(self):
         """Read the Best for checkboxes and custom tag rows (main thread)."""
         names = getattr(self, "_game_names", {})
@@ -196,6 +245,7 @@ class PREditDialog(Adw.Window):
         self._updating_config = True
         try:
             self.config_key_entry.set_text(self._derived_config_key())
+            self._refresh_config_picker()
         finally:
             self._updating_config = False
 

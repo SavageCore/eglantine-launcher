@@ -1537,6 +1537,43 @@ def source_key(info):
     return _config_slug(f"project-{info.get('id') or 'default'}")
 
 
+def known_config_keys(cfg, exclude_id=None):
+    """Existing settings-folder names as [(key, [source names using it])].
+
+    Union of every project's resolved ``source_key`` and every folder
+    already on disk under ``.../sources``. Sorted by key. ``exclude_id``
+    drops one project's name from the usage lists (the source being
+    edited) without dropping the key itself.
+    """
+    users = {}
+
+    def _note(key, name):
+        names = users.setdefault(key, [])
+        if name and name not in names:
+            names.append(name)
+
+    for project in (cfg or {}).get("projects") or []:
+        if not isinstance(project, dict):
+            continue
+        try:
+            key = source_key(project)
+        except Exception:
+            continue
+        if project.get("id") != exclude_id:
+            _note(key, (project.get("name") or project.get("id") or "").strip())
+        else:
+            users.setdefault(key, [])
+    try:
+        root = launcher_config_dir() / "sources"
+        if root.is_dir():
+            for child in root.iterdir():
+                if child.is_dir():
+                    users.setdefault(_config_slug(child.name), [])
+    except OSError:
+        pass
+    return sorted(users.items())
+
+
 def source_config_home(info):
     """XDG_CONFIG_HOME handed to the emulator for one source."""
     return launcher_config_dir() / "sources" / source_key(info)
