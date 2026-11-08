@@ -78,6 +78,7 @@ from ..tasks import (
     fetch_remote_games,
     fetch_remote_sources,
     find_release_for_commit,
+    find_source_binary,
     get_project_last_built,
     install_shortcut,
     is_pr_project,
@@ -393,8 +394,13 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.log_overlay.set_vexpand(True)
         self.log_overlay.set_hexpand(True)
         vadj = self.log_scrolled.get_vadjustment()
+        # value-changed tracks where the view is (user scrolled up or back
+        # down); changed tracks content/viewport growth and re-pins the
+        # tail while following. Never judge follow from changed: the value
+        # momentarily lags the new upper on every insert, which used to
+        # kill follow (and pop the FAB) without any user interaction.
         vadj.connect("value-changed", self._on_log_scroll)
-        vadj.connect("changed", self._on_log_scroll)
+        vadj.connect("changed", self._on_log_adj_changed)
 
         right.append(self.log_overlay)
         # Progress lives with the build output, full panel width, instead
@@ -640,10 +646,29 @@ class LauncherWindow(Adw.ApplicationWindow):
             pass
 
     def _scroll_log_to_bottom(self):
+        # Target the end of the buffer, never the insert mark: insert()
+        # does not move the text cursor, so scrolling to it jumps to
+        # wherever the cursor was left (or the top), which reads as
+        # "follow stopped working".
         try:
             buf = self.log_view.get_buffer()
-            mark = buf.get_insert()
-            self.log_view.scroll_to_mark(mark, 0.0, True, 0.0, 1.0)
+            self.log_view.scroll_to_iter(buf.get_end_iter(), 0.0, True, 0.0, 1.0)
+        except Exception:
+            pass
+
+    def _on_log_adj_changed(self, adj):
+        # Content or viewport changed: while following, pin to the tail.
+        # Synchronous set_value works even when frames are throttled
+        # (window unfocused / on another workspace), unlike scroll_to_mark,
+        # whose pending scroll only lands on the next drawn frame.
+        if not getattr(self, "_log_follow", True):
+            return
+        try:
+            bottom = adj.get_upper() - adj.get_page_size()
+            if bottom < adj.get_lower():
+                bottom = adj.get_lower()
+            if adj.get_value() != bottom:
+                adj.set_value(bottom)
         except Exception:
             pass
 
@@ -1069,10 +1094,12 @@ class LauncherWindow(Adw.ApplicationWindow):
                     commits = list_commits(cfg, 50)
                     have = set(cfg.get("built_commits", []))
                     installed = cfg.get("last_source_commit")
-                    binary = source_dir(cfg) / "build" / "release" / "bin"
-                    binary = binary / ("eglantine.exe" if is_windows() else "eglantine")
+                    try:
+                        binary = find_source_binary(source_dir(cfg))
+                    except Exception:
+                        binary = None
                     labels, shas, subs, latest = source_version_entries(
-                        commits, have, installed, binary.exists()
+                        commits, have, installed, binary is not None
                     )
                     latest_tick = " ✓" if latest in have else ""
                     labels.insert(0, "Latest" + latest_tick)
@@ -1101,9 +1128,8 @@ class LauncherWindow(Adw.ApplicationWindow):
             have = set(self.cfg.get("built_commits", []))
             installed = get_project_last_built(self.cfg, info)
             try:
-                binary = source_dir(self.cfg) / "build" / "release" / "bin"
-                binary = binary / ("eglantine.exe" if is_windows() else "eglantine")
-                present = binary.exists()
+                binary = find_source_binary(source_dir(self.cfg))
+                present = binary is not None
             except Exception:
                 present = False
             labels, shas, subs, latest = pr_version_entries(
@@ -1125,9 +1151,8 @@ class LauncherWindow(Adw.ApplicationWindow):
                     break
             save_config(self.cfg)
             try:
-                binary = source_dir(self.cfg) / "build" / "release" / "bin"
-                binary = binary / ("eglantine.exe" if is_windows() else "eglantine")
-                present = binary.exists()
+                binary = find_source_binary(source_dir(self.cfg))
+                present = binary is not None
             except Exception:
                 present = False
             have = set(self.cfg.get("built_commits", []))
@@ -1439,9 +1464,11 @@ class LauncherWindow(Adw.ApplicationWindow):
         self._set_progress(min(max(frac, 0.0), 1.0))
 
     def _already_built(self, commit):
-        src = source_dir(self.cfg)
-        binary = src / "build" / "release" / "bin" / ("eglantine.exe" if is_windows() else "eglantine")
-        return get_project_last_built(self.cfg) == commit and binary.exists()
+        try:
+            binary = find_source_binary(source_dir(self.cfg))
+        except Exception:
+            binary = None
+        return get_project_last_built(self.cfg) == commit and binary is not None
 
     def _ask_download_or_build(self, tag, sha):
         import threading

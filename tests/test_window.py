@@ -85,6 +85,78 @@ def test_log_panel_hidden_until_build_output(needs_display, fake_home, monkeypat
         window.close()
 
 
+def test_log_bottom_scroll_targets_end_not_cursor(needs_display, fake_home):
+    """FAB / follow must jump to the tail, not the stale text cursor."""
+    window = LauncherWindow(_make_app())
+    try:
+        buf = window.log_view.get_buffer()
+        buf.set_text("line1\nline2\nline3\n")
+        buf.place_cursor(buf.get_start_iter())
+        targets = []
+        window.log_view.scroll_to_iter = lambda it, *a: targets.append(it.get_offset())
+        window._scroll_log_to_bottom()
+        assert targets == [buf.get_char_count()]
+    finally:
+        window.close()
+
+
+def test_log_burst_keeps_follow(needs_display, fake_home, monkeypatch):
+    """A flood of lines must not flip follow off on its own."""
+    from gi.repository import GLib
+
+    window = LauncherWindow(_make_app())
+    try:
+        monkeypatch.setattr(GLib, "idle_add", lambda fn, *a, **k: fn(*a))
+        for i in range(50):
+            window._append_log(f"[{i}/50] Building...")
+        assert window._log_follow is True
+        assert window.log_bottom_btn.get_visible() is False
+    finally:
+        window.close()
+
+
+class _FakeAdj:
+    def __init__(self, value, upper, page, lower=0.0):
+        self._value, self._upper, self._page, self._lower = value, upper, page, lower
+
+    def get_value(self):
+        return self._value
+
+    def get_upper(self):
+        return self._upper
+
+    def get_page_size(self):
+        return self._page
+
+    def get_lower(self):
+        return self._lower
+
+    def set_value(self, value):
+        self._value = value
+
+
+def test_log_adj_changed_snaps_to_tail_while_following(needs_display, fake_home):
+    window = LauncherWindow(_make_app())
+    try:
+        window._log_follow = True
+        adj = _FakeAdj(value=0.0, upper=1000.0, page=200.0)
+        window._on_log_adj_changed(adj)
+        assert adj.get_value() == 800.0
+    finally:
+        window.close()
+
+
+def test_log_adj_changed_leaves_scrolled_up_view_alone(needs_display, fake_home):
+    window = LauncherWindow(_make_app())
+    try:
+        window._log_follow = False
+        adj = _FakeAdj(value=100.0, upper=1000.0, page=200.0)
+        window._on_log_adj_changed(adj)
+        assert adj.get_value() == 100.0
+    finally:
+        window.close()
+
+
 def _pill_labels(window):
     labels = []
     child = window.tag_flow.get_first_child()
