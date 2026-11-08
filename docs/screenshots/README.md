@@ -3,6 +3,7 @@
 | | Light | Dark |
 |---|---|---|
 | Main | ![Main light](light/main.png) | ![Main dark](dark/main.png) |
+| Main build log | ![Main build log light](light/main_build.png) | ![Main build log dark](dark/main_build.png) |
 | Settings | ![Settings light](light/settings.png) | ![Settings dark](dark/settings.png) |
 | Settings GitHub | ![Settings GitHub light](light/settings_github.png) | ![Settings GitHub dark](dark/settings_github.png) |
 | Settings backups | ![Settings backups light](light/settings_backups.png) | ![Settings backups dark](dark/settings_backups.png) |
