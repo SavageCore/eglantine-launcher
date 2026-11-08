@@ -55,6 +55,13 @@ class SidebarLayout(Gtk.Box):
 
     def add_page(self, key, widget):
         """Add a page, wrapped in its own scroller."""
+        # Cards draw their border ring and shadow outside their allocation,
+        # so keep them clear of the viewport edges or the sides render
+        # clipped (invisible borders in light themes especially).
+        widget.set_margin_top(12)
+        widget.set_margin_bottom(12)
+        widget.set_margin_start(12)
+        widget.set_margin_end(12)
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_child(widget)
         scrolled.set_vexpand(True)
