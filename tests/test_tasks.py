@@ -17,6 +17,17 @@ from eglantine_launcher.tasks import (
 )
 
 
+def _touch_fake_binary(cmd):
+    """Simulate cmake producing bin/eglantine for build_source tests."""
+    try:
+        if "--build" in cmd:
+            build_dir = Path(cmd[cmd.index("--build") + 1]) / "bin"
+            build_dir.mkdir(parents=True, exist_ok=True)
+            (build_dir / "eglantine").write_bytes(b"x")
+    except Exception:
+        pass
+
+
 def test_parse_repo_github():
     assert parse_repo("https://github.com/Djihads80/Eglantine.git") == ("github", "Djihads80", "Eglantine")
 
@@ -235,6 +246,7 @@ def test_build_source_uses_pgo_flags(monkeypatch, tmp_path, fake_home):
     class FakeProc:
         def __init__(self, cmd, **kwargs):
             seen.setdefault("cmds", []).append(cmd)
+            _touch_fake_binary(cmd)
             self.stdout = iter(["configuring..."])
             self.returncode = 0
 
@@ -277,6 +289,7 @@ def test_build_source_skips_pgo_without_clang(monkeypatch, tmp_path, fake_home):
     class FakeProc:
         def __init__(self, cmd, **kwargs):
             seen.setdefault("cmds", []).append(cmd)
+            _touch_fake_binary(cmd)
             self.stdout = iter([])
             self.returncode = 0
 
@@ -310,6 +323,7 @@ def test_build_source_lto_off_and_pinned_level(monkeypatch, tmp_path, fake_home)
     class FakeProc:
         def __init__(self, cmd, **kwargs):
             seen.setdefault("cmds", []).append(cmd)
+            _touch_fake_binary(cmd)
             self.stdout = iter([])
             self.returncode = 0
 
@@ -349,6 +363,7 @@ def test_build_source_resets_stale_compiler_cache(monkeypatch, tmp_path, fake_ho
 
     class FakeProc:
         def __init__(self, cmd, **kwargs):
+            _touch_fake_binary(cmd)
             self.stdout = iter([])
             self.returncode = 0
 
@@ -511,6 +526,7 @@ def test_build_source_disables_ipo_when_lto_wont_link(monkeypatch, tmp_path, fak
     class FakeProc:
         def __init__(self, cmd, **kwargs):
             seen.setdefault("cmds", []).append(cmd)
+            _touch_fake_binary(cmd)
             self.stdout = iter([])
             self.returncode = 0
 
@@ -525,6 +541,104 @@ def test_build_source_disables_ipo_when_lto_wont_link(monkeypatch, tmp_path, fak
     assert "-DENABLE_LTO=OFF" in configure
     assert not any("fuse-ld" in a for a in configure)
     assert any("LTO off" in s for s in statuses)
+
+
+def test_find_built_binary_fork_names(tmp_path):
+    import eglantine_launcher.tasks as tasks
+
+    build = tmp_path / "build"
+    bindir = build / "bin"
+    bindir.mkdir(parents=True)
+    # Frizti/Lichii layout: lichii GUI plus eden-cli helper.
+    (bindir / "lichii").write_bytes(b"x" * 16)
+    (bindir / "eden-cli").write_bytes(b"y" * 64)
+    assert tasks.find_built_binary(build) == bindir / "lichii"
+    # Canonical name still wins when both exist.
+    (bindir / "eglantine").write_bytes(b"z")
+    assert tasks.find_built_binary(build) == bindir / "eglantine"
+
+
+def test_find_built_binary_fallback_and_cli_only(tmp_path):
+    import eglantine_launcher.tasks as tasks
+
+    build = tmp_path / "build"
+    bindir = build / "bin"
+    bindir.mkdir(parents=True)
+    (bindir / "eden-cli").write_bytes(b"x" * 100)
+    assert tasks.find_built_binary(build) is None
+    (bindir / "myfork").write_bytes(b"y" * 10)
+    assert tasks.find_built_binary(build) == bindir / "myfork"
+
+
+def test_find_source_binary_searches_level_dirs(tmp_path):
+    import eglantine_launcher.tasks as tasks
+
+    src = tmp_path / "src"
+    legacy = src / "build" / "release" / "bin"
+    legacy.mkdir(parents=True)
+    level = src / "build" / "release-v3" / "bin"
+    level.mkdir(parents=True)
+    (level / "lichii").write_bytes(b"x")
+    assert tasks.find_source_binary(src) == level / "lichii"
+
+
+def test_build_source_returns_lichii_binary(monkeypatch, tmp_path, fake_home):
+    import eglantine_launcher.tasks as tasks
+
+    src = tmp_path / "src"
+    src.mkdir()
+    monkeypatch.setattr(
+        tasks, "ensure_source", lambda cfg, status_cb=None, commit=None, **kw: (src, "abc123")
+    )
+    monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: (None, None))
+    monkeypatch.setattr(tasks, "pick_build_linker", lambda cc, cxx, want_lto=False: ([], True))
+    monkeypatch.setattr(tasks, "_mem_gb", lambda: 16)
+
+    class FakeProc:
+        def __init__(self, cmd, **kwargs):
+            if "--build" in cmd:
+                bindir = Path(cmd[cmd.index("--build") + 1]) / "bin"
+                bindir.mkdir(parents=True, exist_ok=True)
+                (bindir / "lichii").write_bytes(b"x")
+                (bindir / "eden-cli").write_bytes(b"y")
+            self.stdout = iter([])
+            self.returncode = 0
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(tasks, "_host_popen", FakeProc)
+    cfg = {"project": "t", "pgo": False, "projects": [{"id": "t"}]}
+    binary = tasks.build_source(cfg, commit="abc123")
+    assert binary.name == "lichii"
+
+
+def test_build_source_errors_when_binary_missing(monkeypatch, tmp_path, fake_home):
+    import pytest
+
+    import eglantine_launcher.tasks as tasks
+
+    src = tmp_path / "src"
+    src.mkdir()
+    monkeypatch.setattr(
+        tasks, "ensure_source", lambda cfg, status_cb=None, commit=None, **kw: (src, "abc123")
+    )
+    monkeypatch.setattr(tasks, "_find_pgo_clang", lambda: (None, None))
+    monkeypatch.setattr(tasks, "pick_build_linker", lambda cc, cxx, want_lto=False: ([], True))
+    monkeypatch.setattr(tasks, "_mem_gb", lambda: 16)
+
+    class FakeProc:
+        def __init__(self, cmd, **kwargs):
+            self.stdout = iter([])
+            self.returncode = 0
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(tasks, "_host_popen", FakeProc)
+    cfg = {"project": "t", "pgo": False, "projects": [{"id": "t"}]}
+    with pytest.raises(RuntimeError, match="emulator binary not found"):
+        tasks.build_source(cfg, commit="abc123")
 
 
 def test_sibling_tool_finds_bundled_linker(monkeypatch, tmp_path):

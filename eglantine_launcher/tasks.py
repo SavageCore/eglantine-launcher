@@ -1660,6 +1660,131 @@ def source_dir(cfg):
 EMULATOR_CONFIG_DIR = "eglantine"
 EMULATOR_DIR_ALIASES = ("eden", "lichii")
 
+# GUI binary names produced by source builds. Upstream Eglantine emits
+# ``bin/eglantine`` but renames survive per fork: Lichii emits ``bin/lichii``,
+# older Eden trees emit ``bin/eden``, Orchid may emit ``bin/orchid``. The
+# ``yuzu`` target name is kept for the CMake target even when OUTPUT_NAME
+# differs (Frizti/Lichii oot-gather-fix builds ``bin/lichii`` + ``bin/eden-cli``).
+EMULATOR_BINARY_NAMES = ("eglantine", "lichii", "eden", "orchid", "yuzu")
+
+
+def _binary_candidates(win=None):
+    win = is_windows() if win is None else win
+    ext = ".exe" if win else ""
+    return [f"{name}{ext}" for name in EMULATOR_BINARY_NAMES]
+
+
+def find_built_binary(build_dir, win=None):
+    """Emulator GUI binary under ``build_dir/bin``, or None.
+
+    Checks known fork names first, then falls back to the largest
+    non-CLI executable so an unknown rename still launches.
+    """
+    try:
+        bindir = Path(build_dir) / "bin"
+        if not bindir.is_dir():
+            return None
+        for name in _binary_candidates(win):
+            candidate = bindir / name
+            try:
+                if candidate.is_file():
+                    return candidate
+            except OSError:
+                continue
+        fallback = None
+        fallback_size = -1
+        try:
+            entries = list(bindir.iterdir())
+        except OSError:
+            return None
+        for entry in entries:
+            try:
+                if not entry.is_file():
+                    continue
+            except OSError:
+                continue
+            lname = entry.name.lower()
+            if lname.endswith(("-cli", "-cmd", ".cmd.exe")):
+                continue
+            if entry.suffix.lower() in (".so", ".dll", ".pdb", ".lib", ".a", ".exp"):
+                continue
+            if lname in ("eden-cli", "yuzu-cmd", "yuzu-cmd.exe", "eden-cli.exe"):
+                continue
+            try:
+                size = entry.stat().st_size
+            except OSError:
+                continue
+            if size > fallback_size:
+                fallback, fallback_size = entry, size
+        return fallback
+    except Exception:
+        return None
+
+
+def find_source_binary(src, win=None):
+    """Best existing emulator binary for a source checkout, or None.
+
+    Searches ``build/release/bin`` plus every ``build/release-*/bin`` so
+    CPU-level build dirs (e.g. ``release-v3``) are found. When several
+    match, the newest file wins so a stale level dir does not shadow the
+    current build.
+    """
+    try:
+        src = Path(src)
+    except Exception:
+        return None
+    build_root = src / "build"
+    try:
+        if not build_root.is_dir():
+            return None
+    except OSError:
+        return None
+    bindirs = []
+    try:
+        if (build_root / "release" / "bin").is_dir():
+            bindirs.append(build_root / "release")
+        for child in sorted(build_root.glob("release-*")):
+            try:
+                if (child / "bin").is_dir() and child not in bindirs:
+                    bindirs.append(child)
+            except OSError:
+                continue
+    except OSError:
+        return None
+    if not bindirs:
+        return None
+    candidates = _binary_candidates(win)
+    best = None
+    for bindir in bindirs:
+        found = find_built_binary(bindir, win)
+        if found is None:
+            continue
+        # Prefer known names over the generic fallback.
+        try:
+            rank = candidates.index(found.name)
+        except ValueError:
+            rank = len(candidates)
+        try:
+            mtime = found.stat().st_mtime
+        except OSError:
+            mtime = -1.0
+        # Lower rank wins; newest mtime breaks ties across level dirs.
+        score = (rank, -mtime)
+        current = None
+        if best is not None:
+            try:
+                current_rank = candidates.index(best.name)
+            except ValueError:
+                current_rank = len(candidates)
+            try:
+                current_mtime = best.stat().st_mtime
+            except OSError:
+                current_mtime = -1.0
+            current = (current_rank, -current_mtime)
+        if current is None or score < current:
+            best = found
+    return best
+
 
 def _config_slug(text):
     import re
@@ -1956,6 +2081,12 @@ def _data_home():
 def _project_binary(cfg):
     """Best guess at the current project's emulator binary (for save location)."""
     if (cfg or {}).get("mode") == "source":
+        try:
+            found = find_source_binary(source_dir(cfg))
+        except Exception:
+            found = None
+        if found is not None:
+            return found
         name = "eglantine.exe" if is_windows() else "eglantine"
         return source_dir(cfg) / "build" / "release" / "bin" / name
     return release_appimage_path(cfg)
@@ -2838,7 +2969,6 @@ def build_source(
         cfg, status_cb, commit=commit, cancelled=cancelled, log_cb=log_cb, progress_cb=progress_cb
     )
     win = is_windows()
-    binary_name = "eglantine.exe" if win else "eglantine"
     for tool in ("cmake", "ninja", "git", "g++"):
         if _host_which(tool) is None:
             raise RuntimeError(f"Missing required tool: {tool}")
@@ -2857,12 +2987,12 @@ def build_source(
             status_cb(f"CPU target: x86-64-{level_label} ({arch_flags}).")
 
     build_dir = src / "build" / ("release" if win else f"release-{level_label}")
-    binary = build_dir / "bin" / binary_name
-    if get_project_last_built(cfg) == commit and binary.exists():
+    existing = find_built_binary(build_dir, win)
+    if get_project_last_built(cfg) == commit and existing is not None:
         if status_cb:
             status_cb("Source already up to date.")
         record_source_build(cfg, commit)
-        return binary
+        return existing
     flags = [
         "-DCMAKE_BUILD_TYPE=Release",
         "-DBUILD_TESTING=OFF",
@@ -3059,6 +3189,18 @@ def build_source(
         if cancelled and cancelled():
             raise BuildCancelled("Build cancelled.")
         raise RuntimeError("Build failed")
+    binary = find_built_binary(build_dir, win)
+    if binary is None:
+        try:
+            contents = sorted(p.name for p in (build_dir / "bin").iterdir())
+        except OSError:
+            contents = []
+        expected = ", ".join(_binary_candidates(win))
+        raise RuntimeError(
+            f"Build finished but emulator binary not found in {build_dir / 'bin'}"
+            + (f" (found: {', '.join(contents)})" if contents else " (bin/ missing or empty)")
+            + f"; expected one of: {expected}."
+        )
     record_source_build(cfg, commit)
     if status_cb:
         status_cb("Build complete.")
