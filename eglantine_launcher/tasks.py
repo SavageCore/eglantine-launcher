@@ -2305,7 +2305,15 @@ def ensure_source(cfg, status_cb=None, commit=None, cancelled=None, log_cb=None,
         if status_cb:
             status_cb("Fetching source updates...")
         _run_logged(
-            ["git", "-C", str(src), "fetch", "--progress", "origin", info["branch"]],
+            [
+                "git",
+                "-C",
+                str(src),
+                "fetch",
+                "--progress",
+                "origin",
+                f"+refs/heads/{info['branch']}:refs/remotes/origin/{info['branch']}",
+            ],
             log_cb=log_cb,
             cancelled=cancelled,
             progress_cb=progress_cb,
@@ -2313,6 +2321,61 @@ def ensure_source(cfg, status_cb=None, commit=None, cancelled=None, log_cb=None,
     if cancelled and cancelled():
         raise BuildCancelled("Build cancelled.")
     if commit:
+        try:
+            _host_check_output(["git", "-C", str(src), "cat-file", "-e", commit], text=True)
+            have_commit = True
+        except Exception:
+            have_commit = False
+        if not have_commit:
+            # The cached SHA may still exist server-side (e.g. pre-rebase).
+            # GitHub/Forgejo serve reachable SHAs, so try fetching it directly.
+            try:
+                _run_logged(
+                    ["git", "-C", str(src), "fetch", "--progress", "origin", commit],
+                    log_cb=log_cb,
+                    cancelled=cancelled,
+                    progress_cb=progress_cb,
+                )
+                _host_check_output(["git", "-C", str(src), "cat-file", "-e", commit], text=True)
+                have_commit = True
+            except Exception:
+                have_commit = False
+        if not have_commit:
+            try:
+                latest = _host_check_output(
+                    ["git", "-C", str(src), "rev-parse", f"origin/{info['branch']}"],
+                    text=True,
+                ).strip()
+            except Exception:
+                latest = ""
+            short_old = commit[:7] if len(commit) >= 7 else commit
+            short_new = latest[:7] if len(latest) >= 7 else info["branch"]
+            msg = f"Cached commit {short_old} missing (branch was force-pushed?); using latest {short_new} instead."
+            if status_cb:
+                try:
+                    status_cb(msg)
+                except Exception:
+                    pass
+            if log_cb:
+                try:
+                    log_cb(msg)
+                except Exception:
+                    pass
+            _run_logged(
+                ["git", "-C", str(src), "checkout", info["branch"]],
+                log_cb=log_cb,
+                cancelled=cancelled,
+                progress_cb=progress_cb,
+            )
+            _run_logged(
+                ["git", "-C", str(src), "pull", "--ff-only", "origin", info["branch"]],
+                log_cb=log_cb,
+                cancelled=cancelled,
+                progress_cb=progress_cb,
+                check=False,
+            )
+            commit = _host_check_output(["git", "-C", str(src), "rev-parse", "HEAD"], text=True).strip()
+            return src, commit
         _run_logged(
             ["git", "-C", str(src), "checkout", commit],
             log_cb=log_cb,
